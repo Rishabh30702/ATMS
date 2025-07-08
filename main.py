@@ -7,11 +7,47 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QImage, QPixmap
 import cv2
 import easyocr
+import re
+from ultralytics import YOLO
+
 from db import authenticate_user, log_entry, get_user_lane
-from anpr import detect_plate
 from fastag_api import check_fastag
 
+# --- YOLO + OCR Plate Detection ---
+model = YOLO("best2.pt")  # Use your trained YOLOv8 model
 
+def is_valid_plate(text):
+    pattern = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$"
+    return re.match(pattern, text) is not None
+
+def detect_plate(reader, frame):
+    results = model(frame)
+
+    for r in results:
+        for box in r.boxes:
+            conf = float(box.conf[0])
+            if conf < 0.4:
+                continue
+
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cropped = frame[y1:y2, x1:x2]
+
+            gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            ocr_results = reader.readtext(gray) + reader.readtext(thresh)
+            for _, text, ocr_conf in ocr_results:
+                clean = text.replace(" ", "").upper()
+                print(f"[DEBUG] OCR: '{text}' | Clean: '{clean}' | Conf: {ocr_conf:.2f}")
+                if ocr_conf > 0.7 and 6 <= len(clean) <= 12 and is_valid_plate(clean):
+                    print(f"[INFO] ✅ Valid plate detected: {clean}")
+                    return clean, (x1, y1, x2, y2)
+
+    print("[INFO] ❌ No valid plate detected in this frame.")
+    return None, None
+
+
+# --- PyQt App UI ---
 class LoginScreen(QWidget):
     def __init__(self):
         super().__init__()
@@ -100,7 +136,7 @@ class TollApp(QWidget):
             }
         """)
 
-        self.user_info = QLabel(f"👤 {self.user['username']} | Lane {self.lane}")
+        self.user_info = QLabel(f"\U0001F464 {self.user['username']} | Lane {self.lane}")
         self.user_info.setObjectName("Header")
 
         self.video_label = QLabel()
@@ -147,30 +183,37 @@ class TollApp(QWidget):
 
     def update_frame(self):
         ret, frame = self.cap.read()
-        if ret:
-            self.frame_count += 1
-            if self.frame_count % 15 == 0:
-                plate = detect_plate(self.reader, frame)
-                if plate and plate != self.last_detected_plate:
-                    self.last_detected_plate = plate
-                    self.plate_input.setText(plate)
+        if not ret:
+            return
 
-                    tag_info = check_fastag(plate)
-                    status = tag_info["status"]
-                    self.fastag_status.setCurrentText(status)
-                    self.status_display.setText(f"{status} - ₹{tag_info.get('balance', 0.0):.2f}")
+        self.frame_count += 1
+        if self.frame_count % 10 == 0:
+            plate, box = detect_plate(self.reader, frame)
 
-                    QMessageBox.information(self, "FASTag Info", f"""
+            if box:
+                x1, y1, x2, y2 = box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            if plate and plate != self.last_detected_plate:
+                self.last_detected_plate = plate
+                self.plate_input.setText(plate)
+
+                tag_info = check_fastag(plate)
+                status = tag_info["status"]
+                self.fastag_status.setCurrentText(status)
+                self.status_display.setText(f"{status} - ₹{tag_info.get('balance', 0.0):.2f}")
+
+                QMessageBox.information(self, "FASTag Info", f"""
 FASTag Status: {status}
 Tag ID: {tag_info.get('tag_id', 'N/A')}
 Balance: ₹{tag_info.get('balance', 0.0):.2f}
 Vehicle Class: {tag_info.get('vehicle_class', 'N/A')}
 """)
-                    log_entry(plate, "Auto", status, self.user["username"], self.lane)
+                log_entry(plate, "Auto", status, self.user["username"], self.lane)
 
-            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
-            self.video_label.setPixmap(QPixmap.fromImage(image))
+        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
+        self.video_label.setPixmap(QPixmap.fromImage(image))
 
     def submit_manual(self):
         plate = self.plate_input.text()
