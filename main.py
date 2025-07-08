@@ -1,11 +1,11 @@
-# 🔒 Full working Toll Booth ANPR App with styled login and YOLO+OCR
+# 🔒 Full working Toll Booth ANPR App with styled login and custom layout
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
-    QHBoxLayout, QLineEdit, QMessageBox, QComboBox
+    QHBoxLayout, QLineEdit, QMessageBox, QComboBox, QGridLayout
 )
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtGui import QImage, QPixmap, QIcon
 import cv2
 import easyocr
 import re
@@ -34,9 +34,7 @@ def detect_plate(reader, frame):
             ocr_results = reader.readtext(gray) + reader.readtext(thresh)
             for _, text, ocr_conf in ocr_results:
                 clean = text.replace(" ", "").upper()
-                print(f"[DEBUG] OCR: '{text}' | Clean: '{clean}' | Conf: {ocr_conf:.2f}")
                 if ocr_conf > 0.7 and 6 <= len(clean) <= 12 and is_valid_plate(clean):
-                    print(f"[INFO] ✅ Valid plate detected: {clean}")
                     return clean, (x1, y1, x2, y2)
     return None, None
 
@@ -47,7 +45,7 @@ class TollApp(QWidget):
         self.user = user
         self.lane = get_user_lane(user['username'])
         self.setWindowTitle(f"Toll Booth - Lane {self.lane}")
-        self.setGeometry(100, 100, 1100, 600)
+        self.setGeometry(100, 100, 1300, 780)
 
         self.setup_ui()
         self.reader = easyocr.Reader(['en'])
@@ -70,68 +68,72 @@ class TollApp(QWidget):
                 color: #2c3e50;
             }
             QLineEdit, QComboBox {
-                padding: 8px;
+                padding: 10px;
                 border: 1px solid #ccc;
                 border-radius: 6px;
                 font-size: 16px;
-                min-width: 200px;
             }
             QPushButton {
-                background-color: #27ae60;
+                background-color: #34495e;
                 color: white;
-                padding: 8px;
-                font-size: 15px;
-                border: none;
-                border-radius: 6px;
+                padding: 10px;
+                font-size: 16px;
+                border-radius: 8px;
             }
             QPushButton:hover {
-                background-color: #1e8449;
+                background-color: #2c3e50;
             }
         """)
 
-        self.user_info = QLabel(f"\U0001F464 {self.user['username']} | Lane {self.lane}")
-        self.user_info.setObjectName("Header")
+        vehicle_types = ["icons/car.png", "icons/bus.png", "icons/truck.png", "icons/auto.png", "icons/bike.png", "icons/tractor.png"]
+        self.vehicle_buttons = QHBoxLayout()
+        self.vehicle_buttons.setSpacing(10)
+        for vtype in vehicle_types:
+            btn = QPushButton()
+            btn.setIcon(QIcon(vtype))
+            btn.setIconSize(QSize(60, 60))
+            btn.setFixedSize(70, 70)
+            btn.setStyleSheet("background: white; border: 2px solid #ccc; border-radius: 10px;")
+            self.vehicle_buttons.addWidget(btn)
 
-        self.video_label = QLabel()
-        self.video_label.setFixedSize(640, 480)
-        self.video_label.setStyleSheet("border: 2px solid #ccc; border-radius: 8px;")
+        self.video_label = QLabel("CAMERA")
+        self.video_label.setFixedSize(480, 360)
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setStyleSheet("margin-top: 20px; border: 3px solid #ccc; border-radius: 12px;")
 
         self.plate_input = QLineEdit()
-        self.plate_input.setPlaceholderText("Vehicle Number")
+        self.plate_input.setPlaceholderText("Auto detected vehicle number")
 
         self.vehicle_type = QComboBox()
-        self.vehicle_type.addItems(["Car", "Truck", "Bus"])
+        self.vehicle_type.addItems(["Car", "Truck", "Bus", "Auto", "Bike", "Tractor"])
+        self.vehicle_type.setDisabled(True)
 
-        self.fastag_status = QComboBox()
-        self.fastag_status.addItems(["Valid", "Invalid", "No FASTag"])
+        self.price_display = QLineEdit()
+        self.price_display.setPlaceholderText("Calculated price")
+        self.price_display.setReadOnly(True)
 
-        self.status_display = QLabel("")
-        self.status_display.setObjectName("Header")
+        self.info_table = QLabel()
+        self.info_table.setText("""
+            <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
+                <tr style='background:#ffd700;'>
+                    <th>Vehicle no</th><th>Tagno.</th><th>TagStatus</th><th>vehicle chassis</th><th>Status</th>
+                </tr>
+                <tr>
+                    <td colspan='5'>Waiting for detection...</td>
+                </tr>
+            </table>
+        """)
+        self.info_table.setTextFormat(Qt.RichText)
 
-        self.submit_button = QPushButton("Log Entry")
-        self.submit_button.clicked.connect(self.submit_manual)
+        grid = QGridLayout()
+        grid.addLayout(self.vehicle_buttons, 0, 0, 1, 3)
+        grid.addWidget(self.video_label, 1, 0, 1, 1)
+        grid.addWidget(self.plate_input, 1, 1, 1, 2)
+        grid.addWidget(self.vehicle_type, 2, 1, 1, 2)
+        grid.addWidget(self.price_display, 3, 1, 1, 2)
+        grid.addWidget(self.info_table, 4, 0, 1, 3)
 
-        video_layout = QVBoxLayout()
-        video_layout.addWidget(self.user_info)
-        video_layout.addWidget(self.video_label)
-
-        form_layout = QVBoxLayout()
-        form_layout.addWidget(QLabel("Plate Number:"))
-        form_layout.addWidget(self.plate_input)
-        form_layout.addWidget(QLabel("Vehicle Type:"))
-        form_layout.addWidget(self.vehicle_type)
-        form_layout.addWidget(QLabel("FASTag Status:"))
-        form_layout.addWidget(self.fastag_status)
-        form_layout.addWidget(QLabel("Detected Info:"))
-        form_layout.addWidget(self.status_display)
-        form_layout.addStretch()
-        form_layout.addWidget(self.submit_button)
-
-        main_layout = QHBoxLayout()
-        main_layout.addLayout(video_layout)
-        main_layout.addSpacing(30)
-        main_layout.addLayout(form_layout)
-        self.setLayout(main_layout)
+        self.setLayout(grid)
 
     def update_frame(self):
         ret, frame = self.cap.read()
@@ -148,25 +150,26 @@ class TollApp(QWidget):
                 self.plate_input.setText(plate)
                 tag_info = check_fastag(plate)
                 status = tag_info["status"]
-                self.fastag_status.setCurrentText(status)
-                self.status_display.setText(f"{status} - ₹{tag_info.get('balance', 0.0):.2f}")
-                QMessageBox.information(self, "FASTag Info", f"""
-FASTag Status: {status}
-Tag ID: {tag_info.get('tag_id', 'N/A')}
-Balance: ₹{tag_info.get('balance', 0.0):.2f}
-Vehicle Class: {tag_info.get('vehicle_class', 'N/A')}
-""")
+                html = f"""
+                <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
+                    <tr style='background:#ffd700;'>
+                        <th>Vehicle no</th><th>Tagno.</th><th>TagStatus</th><th>vehicle chassis</th><th>Status</th>
+                    </tr>
+                    <tr>
+                        <td>{plate}</td>
+                        <td>{tag_info.get('tag_id', 'N/A')}</td>
+                        <td>{status}</td>
+                        <td>{tag_info.get('vehicle_class', 'N/A')}</td>
+                        <td>₹{tag_info.get('balance', 0.0):.2f}</td>
+                    </tr>
+                </table>
+                """
+                self.info_table.setText(html)
                 log_entry(plate, "Auto", status, self.user["username"], self.lane)
+
         rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
-
-    def submit_manual(self):
-        plate = self.plate_input.text()
-        vehicle = self.vehicle_type.currentText()
-        status = self.fastag_status.currentText()
-        log_entry(plate, vehicle, status, self.user["username"], self.lane)
-        QMessageBox.information(self, "Manual Entry", "Vehicle logged successfully.")
 
     def closeEvent(self, event):
         self.cap.release()
