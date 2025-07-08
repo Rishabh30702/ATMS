@@ -1,9 +1,10 @@
+# 🔒 Full working Toll Booth ANPR App with styled login and YOLO+OCR
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QLineEdit, QMessageBox, QComboBox
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
 import cv2
 import easyocr
@@ -13,28 +14,23 @@ from ultralytics import YOLO
 from db import authenticate_user, log_entry, get_user_lane
 from fastag_api import check_fastag
 
-# --- YOLO + OCR Plate Detection ---
-model = YOLO("best2.pt")  # Use your trained YOLOv8 model
-
+# --------------------- YOLOv8 + OCR ---------------------
+model = YOLO("best2.pt")
 def is_valid_plate(text):
     pattern = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$"
     return re.match(pattern, text) is not None
 
 def detect_plate(reader, frame):
     results = model(frame)
-
     for r in results:
         for box in r.boxes:
             conf = float(box.conf[0])
             if conf < 0.4:
                 continue
-
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cropped = frame[y1:y2, x1:x2]
-
             gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
             ocr_results = reader.readtext(gray) + reader.readtext(thresh)
             for _, text, ocr_conf in ocr_results:
                 clean = text.replace(" ", "").upper()
@@ -42,48 +38,9 @@ def detect_plate(reader, frame):
                 if ocr_conf > 0.7 and 6 <= len(clean) <= 12 and is_valid_plate(clean):
                     print(f"[INFO] ✅ Valid plate detected: {clean}")
                     return clean, (x1, y1, x2, y2)
-
-    print("[INFO] ❌ No valid plate detected in this frame.")
     return None, None
 
-
-# --- PyQt App UI ---
-class LoginScreen(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Operator Login")
-        self.setGeometry(100, 100, 300, 200)
-        self.init_ui()
-
-    def init_ui(self):
-        self.username_input = QLineEdit(self)
-        self.username_input.setPlaceholderText("Username")
-
-        self.password_input = QLineEdit(self)
-        self.password_input.setPlaceholderText("Password")
-        self.password_input.setEchoMode(QLineEdit.Password)
-
-        self.login_button = QPushButton("Login")
-        self.login_button.clicked.connect(self.login)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.username_input)
-        layout.addWidget(self.password_input)
-        layout.addWidget(self.login_button)
-        self.setLayout(layout)
-
-    def login(self):
-        username = self.username_input.text()
-        password = self.password_input.text()
-        user = authenticate_user(username, password)
-        if user:
-            self.close()
-            self.main_app = TollApp(user)
-            self.main_app.show()
-        else:
-            QMessageBox.warning(self, "Login Failed", "Invalid username or password")
-
-
+# --------------------- TollApp Main UI ---------------------
 class TollApp(QWidget):
     def __init__(self, user):
         super().__init__()
@@ -93,7 +50,6 @@ class TollApp(QWidget):
         self.setGeometry(100, 100, 1100, 600)
 
         self.setup_ui()
-
         self.reader = easyocr.Reader(['en'])
         self.cap = cv2.VideoCapture(0)
         self.timer = QTimer()
@@ -112,9 +68,6 @@ class TollApp(QWidget):
                 font-size: 16px;
                 font-weight: bold;
                 color: #2c3e50;
-            }
-            QLabel {
-                font-weight: 500;
             }
             QLineEdit, QComboBox {
                 padding: 8px;
@@ -178,31 +131,25 @@ class TollApp(QWidget):
         main_layout.addLayout(video_layout)
         main_layout.addSpacing(30)
         main_layout.addLayout(form_layout)
-
         self.setLayout(main_layout)
 
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret:
             return
-
         self.frame_count += 1
         if self.frame_count % 10 == 0:
             plate, box = detect_plate(self.reader, frame)
-
             if box:
                 x1, y1, x2, y2 = box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
             if plate and plate != self.last_detected_plate:
                 self.last_detected_plate = plate
                 self.plate_input.setText(plate)
-
                 tag_info = check_fastag(plate)
                 status = tag_info["status"]
                 self.fastag_status.setCurrentText(status)
                 self.status_display.setText(f"{status} - ₹{tag_info.get('balance', 0.0):.2f}")
-
                 QMessageBox.information(self, "FASTag Info", f"""
 FASTag Status: {status}
 Tag ID: {tag_info.get('tag_id', 'N/A')}
@@ -210,7 +157,6 @@ Balance: ₹{tag_info.get('balance', 0.0):.2f}
 Vehicle Class: {tag_info.get('vehicle_class', 'N/A')}
 """)
                 log_entry(plate, "Auto", status, self.user["username"], self.lane)
-
         rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
@@ -225,7 +171,75 @@ Vehicle Class: {tag_info.get('vehicle_class', 'N/A')}
     def closeEvent(self, event):
         self.cap.release()
 
+# --------------------- Styled Login Screen ---------------------
+class LoginScreen(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Toll Booth Login")
+        self.setGeometry(600, 300, 400, 300)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #ecf0f1;
+                font-family: 'Segoe UI';
+            }
+            QLabel {
+                font-size: 20px;
+                color: #2c3e50;
+                font-weight: bold;
+            }
+            QLineEdit {
+                padding: 10px;
+                border: 2px solid #bdc3c7;
+                border-radius: 10px;
+                font-size: 16px;
+            }
+            QPushButton {
+                padding: 10px;
+                background-color: #2980b9;
+                color: white;
+                font-size: 16px;
+                border: none;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: #1f618d;
+            }
+        """)
+        self.init_ui()
 
+    def init_ui(self):
+        self.title = QLabel("\U0001F6A7 Toll Booth Login")
+        self.title.setAlignment(Qt.AlignCenter)
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Enter Username")
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Enter Password")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.login_button = QPushButton("Login")
+        self.login_button.clicked.connect(self.login)
+
+        layout = QVBoxLayout()
+        layout.addStretch()
+        layout.addWidget(self.title)
+        layout.addSpacing(20)
+        layout.addWidget(self.username_input)
+        layout.addWidget(self.password_input)
+        layout.addWidget(self.login_button)
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        user = authenticate_user(username, password)
+        if user:
+            self.close()
+            self.main_app = TollApp(user)
+            self.main_app.show()
+        else:
+            QMessageBox.warning(self, "Login Failed", "Invalid username or password")
+
+# --------------------- Main Entry Point ---------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     login = LoginScreen()
