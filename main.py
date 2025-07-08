@@ -54,16 +54,17 @@ class TollApp(QWidget):
         self.user = user
         self.lane = get_user_lane(user['username'])
         self.setWindowTitle(f"Toll Booth - Lane {self.lane}")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 1100, 600)
+
         self.setup_ui()
+
         self.reader = easyocr.Reader(['en'])
         self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(100)
         self.frame_count = 0
+        self.last_detected_plate = ""
 
     def setup_ui(self):
         self.setStyleSheet("""
@@ -72,158 +73,116 @@ class TollApp(QWidget):
                 font-size: 14px;
             }
             QLabel#Header {
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: bold;
                 color: #2c3e50;
             }
+            QLabel {
+                font-weight: 500;
+            }
             QLineEdit, QComboBox {
-                padding: 6px;
+                padding: 8px;
                 border: 1px solid #ccc;
-                border-radius: 4px;
+                border-radius: 6px;
                 font-size: 16px;
+                min-width: 200px;
             }
             QPushButton {
-                background-color: #2980b9;
+                background-color: #27ae60;
                 color: white;
-                padding: 8px 12px;
-                border-radius: 4px;
+                padding: 8px;
                 font-size: 15px;
+                border: none;
+                border-radius: 6px;
             }
             QPushButton:hover {
-                background-color: #1c5980;
-            }
-            QLineEdit[readOnly="true"] {
-                background-color: #ecf0f1;
-                font-size: 20px;
-                font-weight: bold;
-                color: #e67e22;
-            }
-            QLabel#FastagStatus {
-                font-size: 18px;
-                font-weight: bold;
-                color: #27ae60;
+                background-color: #1e8449;
             }
         """)
 
-        self.user_info_label = QLabel(f"Logged in as: {self.user['username']} | Lane: {self.lane}")
-        self.user_info_label.setObjectName("Header")
+        self.user_info = QLabel(f"👤 {self.user['username']} | Lane {self.lane}")
+        self.user_info.setObjectName("Header")
 
         self.video_label = QLabel()
         self.video_label.setFixedSize(640, 480)
+        self.video_label.setStyleSheet("border: 2px solid #ccc; border-radius: 8px;")
 
-        self.toggle_button = QPushButton("Switch to Manual Mode")
-        self.toggle_button.clicked.connect(self.toggle_mode)
-        self.mode = "auto"
-
-        self.plate_label = QLabel("Detected Plate:")
         self.plate_input = QLineEdit()
-        self.plate_input.setReadOnly(True)
+        self.plate_input.setPlaceholderText("Vehicle Number")
 
-        self.status_label = QLabel("FASTag:")
-        self.status_display = QLabel("")
-        self.status_display.setObjectName("FastagStatus")
-
-        self.manual_input = QLineEdit()
         self.vehicle_type = QComboBox()
         self.vehicle_type.addItems(["Car", "Truck", "Bus"])
+
         self.fastag_status = QComboBox()
         self.fastag_status.addItems(["Valid", "Invalid", "No FASTag"])
-        self.manual_submit = QPushButton("Submit Manual Entry")
-        self.manual_submit.clicked.connect(self.submit_manual)
 
-        self.manual_input.hide()
-        self.vehicle_type.hide()
-        self.fastag_status.hide()
-        self.manual_submit.hide()
+        self.status_display = QLabel("")
+        self.status_display.setObjectName("Header")
 
-        vbox = QVBoxLayout()
-        vbox.addWidget(self.user_info_label)
-        vbox.addWidget(self.video_label)
-        vbox.addWidget(self.toggle_button)
+        self.submit_button = QPushButton("Log Entry")
+        self.submit_button.clicked.connect(self.submit_manual)
 
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.plate_label)
-        hbox.addWidget(self.plate_input)
-        hbox.addWidget(self.status_label)
-        hbox.addWidget(self.status_display)
+        video_layout = QVBoxLayout()
+        video_layout.addWidget(self.user_info)
+        video_layout.addWidget(self.video_label)
 
-        manual_box = QVBoxLayout()
-        manual_box.addWidget(QLabel("Manual Plate Entry:"))
-        manual_box.addWidget(self.manual_input)
-        manual_box.addWidget(QLabel("Vehicle Type:"))
-        manual_box.addWidget(self.vehicle_type)
-        manual_box.addWidget(QLabel("FASTag Status:"))
-        manual_box.addWidget(self.fastag_status)
-        manual_box.addWidget(self.manual_submit)
+        form_layout = QVBoxLayout()
+        form_layout.addWidget(QLabel("Plate Number:"))
+        form_layout.addWidget(self.plate_input)
+        form_layout.addWidget(QLabel("Vehicle Type:"))
+        form_layout.addWidget(self.vehicle_type)
+        form_layout.addWidget(QLabel("FASTag Status:"))
+        form_layout.addWidget(self.fastag_status)
+        form_layout.addWidget(QLabel("Detected Info:"))
+        form_layout.addWidget(self.status_display)
+        form_layout.addStretch()
+        form_layout.addWidget(self.submit_button)
 
-        vbox.addLayout(hbox)
-        vbox.addLayout(manual_box)
-        self.setLayout(vbox)
+        main_layout = QHBoxLayout()
+        main_layout.addLayout(video_layout)
+        main_layout.addSpacing(30)
+        main_layout.addLayout(form_layout)
 
-    def toggle_mode(self):
-        if self.mode == "auto":
-            self.mode = "manual"
-            self.toggle_button.setText("Switch to Auto Mode")
-            self.manual_input.show()
-            self.vehicle_type.show()
-            self.fastag_status.show()
-            self.manual_submit.show()
-        else:
-            self.mode = "auto"
-            self.toggle_button.setText("Switch to Manual Mode")
-            self.manual_input.hide()
-            self.vehicle_type.hide()
-            self.fastag_status.hide()
-            self.manual_submit.hide()
+        self.setLayout(main_layout)
 
     def update_frame(self):
-        if self.mode == "auto":
-            ret, frame = self.cap.read()
-            if ret:
-                self.frame_count += 1
-                if self.frame_count % 10 == 0:
-                    plate = detect_plate(self.reader, frame)
-                    if plate:
-                        self.plate_input.setText(plate)
-                        self.manual_input.setText(plate)
+        ret, frame = self.cap.read()
+        if ret:
+            self.frame_count += 1
+            if self.frame_count % 15 == 0:
+                plate = detect_plate(self.reader, frame)
+                if plate and plate != self.last_detected_plate:
+                    self.last_detected_plate = plate
+                    self.plate_input.setText(plate)
 
-                        tag_info = check_fastag(plate)
-                        status = tag_info['status']
-                        self.status_display.setText(status)
+                    tag_info = check_fastag(plate)
+                    status = tag_info["status"]
+                    self.fastag_status.setCurrentText(status)
+                    self.status_display.setText(f"{status} - ₹{tag_info.get('balance', 0.0):.2f}")
 
-                        info_message = f"FASTag Status: {status}\n"
-                        if status == "Valid":
-                            info_message += (
-                                f"Tag ID: {tag_info['tag_id']}\n"
-                                f"Balance: ₹{tag_info['balance']:.2f}\n"
-                                f"Vehicle Class: {tag_info['vehicle_class']}"
-                            )
-                        elif status == "Invalid":
-                            info_message += "This FASTag is invalid. Please ask for alternate payment."
-                        else:
-                            info_message += "No FASTag associated with this vehicle."
+                    QMessageBox.information(self, "FASTag Info", f"""
+FASTag Status: {status}
+Tag ID: {tag_info.get('tag_id', 'N/A')}
+Balance: ₹{tag_info.get('balance', 0.0):.2f}
+Vehicle Class: {tag_info.get('vehicle_class', 'N/A')}
+""")
+                    log_entry(plate, "Auto", status, self.user["username"], self.lane)
 
-                        QMessageBox.information(self, "FASTag Info", info_message)
-
-                        log_entry(plate, "Auto", status, self.user['username'], self.lane)
-
-                rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
-                self.video_label.setPixmap(QPixmap.fromImage(image))
+            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
+            self.video_label.setPixmap(QPixmap.fromImage(image))
 
     def submit_manual(self):
-        plate = self.manual_input.text()
+        plate = self.plate_input.text()
         vehicle = self.vehicle_type.currentText()
         status = self.fastag_status.currentText()
-        self.plate_input.setText(plate)
-        self.status_display.setText(status)
-        log_entry(plate, vehicle, status, self.user['username'], self.lane)
+        log_entry(plate, vehicle, status, self.user["username"], self.lane)
+        QMessageBox.information(self, "Manual Entry", "Vehicle logged successfully.")
 
     def closeEvent(self, event):
         self.cap.release()
 
 
-# --- ENTRY POINT ---
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     login = LoginScreen()
