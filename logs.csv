@@ -1,2 +1,13 @@
 Timestamp,Plate,Mode,Status,User,Lane
 2025-07-09 07:53:27,MH14BK6899,Auto,Invalid,admin,1
+2025-07-09 10:04:55,MH14BR6899,Auto,Invalid,admin,1
+2025-07-09 11:09:50,UP16CB8442,Manual (No Tag),₹120.00 Cash,admin,1
+2025-07-09 11:10:09,MH14BK6899,Auto,Valid,admin,1
+2025-07-09 11:10:34,MH14BR6899,Auto,Valid,admin,1
+2025-07-09 11:16:38,MH14BR6899,Auto,Valid,admin,1
+2025-07-09 11:16:48,MH14BR6899,Manual (No Tag),₹100.00 Cash,admin,1
+2025-07-09 11:17:12,HH14BR6899,Auto,Invalid,admin,1
+2025-07-09 11:33:54,MH14BK6899,Auto,Valid,admin,1
+2025-07-09 11:38:11,MH14BR6899,Auto,Valid,admin,1
+2025-07-09 11:43:07,MH14BR6899,Auto,Deducted ₹60.00,admin,1
+2025-07-09 11:43:35,MH14BR68977,Manual (No Tag),₹120.00 Cash,admin,1
