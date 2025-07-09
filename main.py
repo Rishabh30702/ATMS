@@ -1,10 +1,10 @@
-# ✅ Enhanced Toll Booth GUI with ANPR + RFID + FASTag + Auto Deduction + Logs
-
 import sys
 import os
 import cv2
 import re
 import winsound
+import threading
+import serial  # Requires pyserial
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
@@ -19,9 +19,9 @@ from db import authenticate_user, get_user_lane, log_entry
 from fastag_api import check_fastag, deduct_fastag_amount
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
-model = YOLO("best2.pt")
 CAPTURE_FOLDER = "captured"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
+model = YOLO("best2.pt")
 
 PRICING = {
     "Car": 60,
@@ -61,15 +61,38 @@ class TollApp(QWidget):
         self.lane = get_user_lane(user['username'])
         self.setWindowTitle(f"Toll Booth - Lane {self.lane}")
         self.setGeometry(100, 100, 1000, 600)
-        self.setup_ui()
-        self.reader = easyocr.Reader(['en'])
+        self.anpr_status = QLabel("ANPR: Detecting...")
+        self.rfid_status = QLabel("RFID: Listening...")
+        self.anpr_status.setStyleSheet("color: green; font-weight: bold;")
+        self.rfid_status.setStyleSheet("color: blue; font-weight: bold;")
+        
+        self.setup_ui()  # Now it's safe to use these labels
+        
+        self.reader = easyocr.Reader(['en'], gpu=True)
         self.cap = cv2.VideoCapture(0)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(100)
         self.frame_count = 0
         self.last_detected_plate = ""
         self.current_frame = None
+
+        self.start_rfid_listener("COM3")  # Update COM port as required
+
+    def start_rfid_listener(self, port):
+        def listen():
+            try:
+                ser = serial.Serial(port, 9600, timeout=1)
+                while True:
+                    tag = ser.readline().decode().strip()
+                    if tag:
+                        self.plate_input.setText(tag.upper())
+                        self.handle_auto_deduction(tag.upper())
+            except Exception as e:
+                print("RFID Error:", e)
+
+        threading.Thread(target=listen, daemon=True).start()
 
     def setup_ui(self):
         vehicle_types = [
@@ -80,14 +103,13 @@ class TollApp(QWidget):
             ("Bike", "icons/bike.jpg", "F5"),
             ("Tractor", "icons/tractor.jpg", "F6")
         ]
-
         self.vehicle_buttons = QHBoxLayout()
         self.vehicle_btns = {}
         for label, path, key in vehicle_types:
-            btn = QPushButton(f"{label}\n[{key}]")
+            btn = QPushButton(f"{label}\\n[{key}]")
             btn.setIcon(QIcon(path))
             btn.setIconSize(QSize(80, 80))
-            btn.setFixedSize(100, 100)
+            btn.setFixedSize(140, 100)
             btn.setToolTip(label)
             btn.clicked.connect(lambda _, t=label: self.select_vehicle(t))
             self.vehicle_buttons.addWidget(btn)
@@ -110,12 +132,7 @@ class TollApp(QWidget):
 
         self.no_fastag_checkbox = QCheckBox("Proceed without FASTag")
 
-        self.info_table = QLabel("""
-            <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
-                <tr style='background:#ffd700;'>
-                    <th>Vehicle no</th><th>Tagno.</th><th>Status</th><th>Class</th><th>Time</th>
-                </tr><tr><td colspan='5'>Waiting for detection...</td></tr></table>
-        """)
+        self.info_table = QLabel("Waiting for detection...")
         self.info_table.setTextFormat(Qt.RichText)
 
         self.transactions_table = QTableWidget(5, 5)
@@ -146,8 +163,13 @@ class TollApp(QWidget):
         row = QHBoxLayout()
         row.addWidget(self.video_label)
         row.addLayout(right)
-        main.addLayout(row)
 
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(self.anpr_status)
+        status_layout.addWidget(self.rfid_status)
+        main.addLayout(status_layout)
+
+        main.addLayout(row)
         self.setLayout(main)
 
     def update_frame(self):
@@ -162,7 +184,6 @@ class TollApp(QWidget):
                 self.last_detected_plate = plate
                 self.plate_input.setText(plate)
                 self.handle_auto_deduction(plate)
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
@@ -182,21 +203,6 @@ class TollApp(QWidget):
         winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
         now = datetime.now().strftime("%H:%M:%S")
 
-        html = f"""
-        <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
-            <tr style='background:#ffd700;'>
-                <th>Vehicle no</th><th>Tagno.</th><th>Status</th><th>Class</th><th>Time</th>
-            </tr>
-            <tr>
-                <td>{plate}</td>
-                <td>{tag_info.get('tag_id', 'N/A')}</td>
-                <td>{tag_info['status']}</td>
-                <td>{tag_info.get('vehicle_class', 'N/A')}</td>
-                <td>{now}</td>
-            </tr>
-        </table>"""
-        self.info_table.setText(html)
-
         if tag_info['status'] == 'Valid':
             amount = PRICING.get(tag_info.get('vehicle_class', 'Car'), 60)
             if tag_info['balance'] >= amount:
@@ -204,6 +210,8 @@ class TollApp(QWidget):
                 self.capture_image(plate)
                 log_entry(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'], self.user['username'], self.lane)
                 self.update_transactions(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'])
+
+        self.info_table.setText(f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | <b>Balance:</b> ₹{tag_info.get('balance', 0)}")
 
     def handle_transaction(self):
         plate = self.plate_input.text().strip().upper()
@@ -217,12 +225,10 @@ class TollApp(QWidget):
         except:
             QMessageBox.warning(self, "Invalid Amount", "Amount must be a number.")
             return
-
         tag_info = check_fastag(plate)
         if tag_info['status'] != 'Valid' and not self.no_fastag_checkbox.isChecked():
             QMessageBox.warning(self, "FASTag Error", "FASTag invalid. Select 'Proceed without FASTag'.")
             return
-
         if tag_info['status'] == 'Valid' and tag_info['balance'] >= amount:
             deduct_fastag_amount(plate, amount)
         self.capture_image(plate)
@@ -231,7 +237,7 @@ class TollApp(QWidget):
 
     def capture_image(self, plate):
         if self.current_frame is not None:
-            filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg")
+            filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
             cv2.imwrite(filename, self.current_frame)
 
     def update_transactions(self, plate, vehicle, status):
@@ -243,7 +249,7 @@ class TollApp(QWidget):
             self.transactions_table.removeRow(5)
 
     def export_logs(self):
-        QMessageBox.information(self, "Info", "All logs stored in local SQLite logs.db")
+        QMessageBox.information(self, "Info", "All logs are stored in logs.db")
 
     def keyPressEvent(self, event: QKeyEvent):
         keys = {
@@ -331,7 +337,6 @@ class LoginScreen(QWidget):
             self.main_app.show()
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password")
-
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     login = LoginScreen()
