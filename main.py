@@ -1,38 +1,36 @@
-# ✅ Full Toll Booth ANPR App with GUI + Auto Deduction + Manual + FASTag + Icons + Function Keys
+# ✅ Enhanced Toll Booth GUI with ANPR + RFID + FASTag + Auto Deduction + Logs
+
 import sys
 import os
-import csv
-from datetime import datetime
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
-    QHBoxLayout, QLineEdit, QMessageBox, QComboBox, QFileDialog, QCheckBox
-)
-from PyQt5.QtCore import QTimer, Qt, QSize
-from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeySequence
 import cv2
-import easyocr
 import re
 import winsound
+from datetime import datetime
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QLineEdit, QMessageBox, QComboBox, QFileDialog, QCheckBox, QTableWidget,
+    QTableWidgetItem, QHeaderView
+)
+from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
 from ultralytics import YOLO
-
-from db import authenticate_user, get_user_lane
+import easyocr
+from db import authenticate_user, get_user_lane, log_entry
 from fastag_api import check_fastag, deduct_fastag_amount
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
 model = YOLO("best2.pt")
-LOG_FILE = "logs.csv"
 CAPTURE_FOLDER = "captured"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
 
-if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Timestamp", "Plate", "Mode", "Status", "User", "Lane"])
-
-def log_entry(plate, mode, status, username, lane):
-    with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), plate, mode, status, username, lane])
+PRICING = {
+    "Car": 60,
+    "Bus": 120,
+    "Truck": 150,
+    "Auto": 40,
+    "Bike": 30,
+    "Tractor": 80
+}
 
 def is_valid_plate(text):
     pattern = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$"
@@ -62,7 +60,8 @@ class TollApp(QWidget):
         self.user = user
         self.lane = get_user_lane(user['username'])
         self.setWindowTitle(f"Toll Booth - Lane {self.lane}")
-        self.setGeometry(100, 100, 800, 500)
+        self.setGeometry(100, 100, 1000, 600)
+        self.setup_ui()
         self.reader = easyocr.Reader(['en'])
         self.cap = cv2.VideoCapture(0)
         self.timer = QTimer()
@@ -71,93 +70,85 @@ class TollApp(QWidget):
         self.frame_count = 0
         self.last_detected_plate = ""
         self.current_frame = None
-        self.vehicle_buttons_map = {}
-        self.setup_ui()
 
     def setup_ui(self):
         vehicle_types = [
-            ("Car", "icons/car.jpg", Qt.Key_F1),
-            ("Bus", "icons/bus.jpg", Qt.Key_F2),
-            ("Truck", "icons/truck.png", Qt.Key_F3),
-            ("Auto", "icons/auto.jpg", Qt.Key_F4),
-            ("Bike", "icons/bike.jpg", Qt.Key_F5),
-            ("Tractor", "icons/tractor.jpg", Qt.Key_F6)
+            ("Car", "icons/car.jpg", "F1"),
+            ("Bus", "icons/bus.jpg", "F2"),
+            ("Truck", "icons/truck.png", "F3"),
+            ("Auto", "icons/auto.jpg", "F4"),
+            ("Bike", "icons/bike.jpg", "F5"),
+            ("Tractor", "icons/tractor.jpg", "F6")
         ]
 
         self.vehicle_buttons = QHBoxLayout()
-        self.vehicle_type = QComboBox()
-
-        for i, (label, path, key) in enumerate(vehicle_types):
-            btn = QPushButton(f"{label}\n(F{i+1})")
+        self.vehicle_btns = {}
+        for label, path, key in vehicle_types:
+            btn = QPushButton(f"{label}\n[{key}]")
             btn.setIcon(QIcon(path))
-            btn.setIconSize(QSize(50, 50))
-            btn.setFixedSize(90, 90)
+            btn.setIconSize(QSize(80, 80))
+            btn.setFixedSize(100, 100)
             btn.setToolTip(label)
-            btn.setStyleSheet("background: white; border: 2px solid #ddd; border-radius: 12px;")
-            btn.clicked.connect(lambda _, l=label: self.vehicle_type.setCurrentText(l))
+            btn.clicked.connect(lambda _, t=label: self.select_vehicle(t))
             self.vehicle_buttons.addWidget(btn)
-            self.vehicle_buttons_map[key] = label
-            self.vehicle_type.addItem(label)
+            self.vehicle_btns[key] = label
 
         self.video_label = QLabel()
         self.video_label.setFixedSize(480, 360)
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("margin-top: 30px; border: 3px solid #ccc; border-radius: 12px;")
+        self.video_label.setStyleSheet("border: 3px solid #ccc; border-radius: 12px;")
 
         self.plate_input = QLineEdit()
         self.plate_input.setPlaceholderText("Auto detected vehicle number")
 
+        self.vehicle_type = QComboBox()
+        self.vehicle_type.addItems(PRICING.keys())
+        self.vehicle_type.currentTextChanged.connect(self.set_amount_by_vehicle)
+
         self.amount_input = QLineEdit()
-        self.amount_input.setPlaceholderText("Enter Amount")
+        self.amount_input.setPlaceholderText("Enter Toll Amount")
 
-        self.price_display = QLineEdit()
-        self.price_display.setPlaceholderText("Calculated price")
-        self.price_display.setReadOnly(True)
+        self.no_fastag_checkbox = QCheckBox("Proceed without FASTag")
 
-        self.no_fastag_checkbox = QCheckBox("Proceed without FASTag (Cash/Invalid Tag)")
-
-        self.info_table = QLabel("""<table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
-            <tr style='background:#ffd700;'>
-                <th>Vehicle no</th><th>Tagno.</th><th>TagStatus</th><th>vehicle chassis</th><th>Status</th>
-            </tr><tr><td colspan='5'>Waiting for detection...</td></tr></table>""")
+        self.info_table = QLabel("""
+            <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
+                <tr style='background:#ffd700;'>
+                    <th>Vehicle no</th><th>Tagno.</th><th>Status</th><th>Class</th><th>Time</th>
+                </tr><tr><td colspan='5'>Waiting for detection...</td></tr></table>
+        """)
         self.info_table.setTextFormat(Qt.RichText)
 
-        self.confirm_button = QPushButton("Confirm Transaction")
-        self.confirm_button.clicked.connect(self.handle_manual_deduction)
+        self.transactions_table = QTableWidget(5, 5)
+        self.transactions_table.setHorizontalHeaderLabels(["Plate", "Vehicle", "FASTag", "Operator", "Time"])
+        self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        self.export_button = QPushButton("\U0001F4E4 Export Logs")
+        self.confirm_button = QPushButton("Confirm Transaction")
+        self.confirm_button.clicked.connect(self.handle_transaction)
+
+        self.export_button = QPushButton("Export Logs")
         self.export_button.clicked.connect(self.export_logs)
 
-        form_layout = QVBoxLayout()
-        form_layout.addWidget(self.plate_input)
-        form_layout.addWidget(self.vehicle_type)
-        form_layout.addWidget(self.amount_input)
-        form_layout.addWidget(self.price_display)
-        form_layout.addWidget(self.no_fastag_checkbox)
-        form_layout.addWidget(self.info_table)
-        form_layout.addWidget(self.confirm_button)
-        form_layout.addWidget(self.export_button)
+        form = QVBoxLayout()
+        form.addWidget(self.plate_input)
+        form.addWidget(self.vehicle_type)
+        form.addWidget(self.amount_input)
+        form.addWidget(self.no_fastag_checkbox)
+        form.addWidget(self.info_table)
+        form.addWidget(self.confirm_button)
+        form.addWidget(self.export_button)
 
-        main_layout = QVBoxLayout()
-        main_layout.addLayout(self.vehicle_buttons)
-        row_layout = QHBoxLayout()
-        row_layout.addWidget(self.video_label)
-        row_layout.addSpacing(20)
-        row_layout.addLayout(form_layout)
-        main_layout.addLayout(row_layout)
-        self.setLayout(main_layout)
+        right = QVBoxLayout()
+        right.addWidget(self.transactions_table)
+        right.addLayout(form)
 
-    def keyPressEvent(self, event):
-        if event.key() in self.vehicle_buttons_map:
-            self.vehicle_type.setCurrentText(self.vehicle_buttons_map[event.key()])
+        main = QVBoxLayout()
+        main.addLayout(self.vehicle_buttons)
+        row = QHBoxLayout()
+        row.addWidget(self.video_label)
+        row.addLayout(right)
+        main.addLayout(row)
 
-    def export_logs(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Logs", "", "CSV Files (*.csv)")
-        if path:
-            import pandas as pd
-            df = pd.read_csv(LOG_FILE)
-            df.to_csv(path, index=False)
-            QMessageBox.information(self, "Export Complete", f"Logs exported to:\n{path}")
+        self.setLayout(main)
 
     def update_frame(self):
         ret, frame = self.cap.read()
@@ -167,95 +158,104 @@ class TollApp(QWidget):
         self.frame_count += 1
         if self.frame_count % 10 == 0:
             plate, box = detect_plate(self.reader, frame)
-            if box:
-                x1, y1, x2, y2 = box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             if plate and plate != self.last_detected_plate:
                 self.last_detected_plate = plate
                 self.plate_input.setText(plate)
-                tag_info = check_fastag(plate)
-                winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                self.handle_auto_deduction(plate)
 
-                html = f"""
-                <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
-                    <tr style='background:#ffd700;'>
-                        <th>Vehicle no</th><th>Tagno.</th><th>TagStatus</th><th>vehicle chassis</th><th>Status</th>
-                    </tr>
-                    <tr>
-                        <td>{plate}</td>
-                        <td>{tag_info.get('tag_id', 'N/A')}</td>
-                        <td>{tag_info['status']}</td>
-                        <td>{tag_info.get('vehicle_class', 'N/A')}</td>
-                        <td>₹{tag_info.get('balance', 0.0):.2f}</td>
-                    </tr>
-                </table>
-                """
-                self.info_table.setText(html)
-
-                toll_amount = 60.0
-                if tag_info["status"] == "Valid" and tag_info["balance"] >= toll_amount:
-                    success = deduct_fastag_amount(plate, toll_amount)
-                    if success:
-                        QMessageBox.information(self, "Auto Deduction", f"₹{toll_amount:.2f} deducted from {plate}")
-                        if self.current_frame is not None:
-                            filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d%H%M%S')}_auto.jpg")
-                            cv2.imwrite(filename, self.current_frame)
-                        log_entry(plate, "Auto", f"Deducted ₹{toll_amount:.2f}", self.user["username"], self.lane)
-                    else:
-                        QMessageBox.warning(self, "Auto Deduction Failed", "FASTag deduction failed.")
-                else:
-                    log_entry(plate, "Auto", tag_info["status"], self.user["username"], self.lane)
-
-        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = QImage(rgb_image, rgb_image.shape[1], rgb_image.shape[0], QImage.Format_RGB888)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
 
-    def handle_manual_deduction(self):
+    def set_amount_by_vehicle(self):
+        vehicle = self.vehicle_type.currentText()
+        if vehicle in PRICING:
+            self.amount_input.setText(str(PRICING[vehicle]))
+
+    def select_vehicle(self, vehicle):
+        index = self.vehicle_type.findText(vehicle)
+        if index >= 0:
+            self.vehicle_type.setCurrentIndex(index)
+
+    def handle_auto_deduction(self, plate):
+        tag_info = check_fastag(plate)
+        winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        now = datetime.now().strftime("%H:%M:%S")
+
+        html = f"""
+        <table border='1' cellpadding='6' cellspacing='0' style='background:#d4f542'>
+            <tr style='background:#ffd700;'>
+                <th>Vehicle no</th><th>Tagno.</th><th>Status</th><th>Class</th><th>Time</th>
+            </tr>
+            <tr>
+                <td>{plate}</td>
+                <td>{tag_info.get('tag_id', 'N/A')}</td>
+                <td>{tag_info['status']}</td>
+                <td>{tag_info.get('vehicle_class', 'N/A')}</td>
+                <td>{now}</td>
+            </tr>
+        </table>"""
+        self.info_table.setText(html)
+
+        if tag_info['status'] == 'Valid':
+            amount = PRICING.get(tag_info.get('vehicle_class', 'Car'), 60)
+            if tag_info['balance'] >= amount:
+                deduct_fastag_amount(plate, amount)
+                self.capture_image(plate)
+                log_entry(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'], self.user['username'], self.lane)
+                self.update_transactions(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'])
+
+    def handle_transaction(self):
         plate = self.plate_input.text().strip().upper()
         amount = self.amount_input.text().strip()
         vehicle = self.vehicle_type.currentText()
-
         if not plate or not amount:
-            QMessageBox.warning(self, "Input Error", "Please enter vehicle number and amount.")
+            QMessageBox.warning(self, "Missing Info", "Enter plate and amount.")
             return
-
         try:
             amount = float(amount)
-        except ValueError:
-            QMessageBox.warning(self, "Amount Error", "Amount must be a number.")
+        except:
+            QMessageBox.warning(self, "Invalid Amount", "Amount must be a number.")
             return
 
         tag_info = check_fastag(plate)
-        if tag_info['status'] != 'Valid':
-            if not self.no_fastag_checkbox.isChecked():
-                QMessageBox.warning(self, "FASTag Error",
-                    f"FASTag is {tag_info['status']}. Check 'Proceed without FASTag' to allow manual processing.")
-                return
-            else:
-                if self.current_frame is not None:
-                    filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d%H%M%S')}_manual.jpg")
-                    cv2.imwrite(filename, self.current_frame)
-                QMessageBox.information(self, "Processed", "Entry logged manually without FASTag.")
-                log_entry(plate, "Manual (No Tag)", f"₹{amount:.2f} Cash", self.user['username'], self.lane)
-                self.last_detected_plate = ""
-                self.frame_count = 0
-                return
-
-        if tag_info['balance'] < amount:
-            QMessageBox.warning(self, "Balance Error", "Insufficient balance in FASTag.")
+        if tag_info['status'] != 'Valid' and not self.no_fastag_checkbox.isChecked():
+            QMessageBox.warning(self, "FASTag Error", "FASTag invalid. Select 'Proceed without FASTag'.")
             return
 
-        success = deduct_fastag_amount(plate, amount)
-        if success:
-            QMessageBox.information(self, "Success", f"₹{amount:.2f} deducted successfully from {plate}")
-            if self.current_frame is not None:
-                filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
-                cv2.imwrite(filename, self.current_frame)
-            log_entry(plate, "Manual", "Deducted", self.user['username'], self.lane)
-            self.last_detected_plate = ""
-            self.frame_count = 0
-        else:
-            QMessageBox.warning(self, "Transaction Failed", "Deduction failed due to unknown error.")
+        if tag_info['status'] == 'Valid' and tag_info['balance'] >= amount:
+            deduct_fastag_amount(plate, amount)
+        self.capture_image(plate)
+        log_entry(plate, vehicle, tag_info['status'], self.user['username'], self.lane)
+        self.update_transactions(plate, vehicle, tag_info['status'])
+
+    def capture_image(self, plate):
+        if self.current_frame is not None:
+            filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg")
+            cv2.imwrite(filename, self.current_frame)
+
+    def update_transactions(self, plate, vehicle, status):
+        row = [plate, vehicle, status, self.user['username'], datetime.now().strftime("%H:%M:%S")]
+        self.transactions_table.insertRow(0)
+        for col, val in enumerate(row):
+            self.transactions_table.setItem(0, col, QTableWidgetItem(str(val)))
+        if self.transactions_table.rowCount() > 5:
+            self.transactions_table.removeRow(5)
+
+    def export_logs(self):
+        QMessageBox.information(self, "Info", "All logs stored in local SQLite logs.db")
+
+    def keyPressEvent(self, event: QKeyEvent):
+        keys = {
+            Qt.Key_F1: "Car",
+            Qt.Key_F2: "Bus",
+            Qt.Key_F3: "Truck",
+            Qt.Key_F4: "Auto",
+            Qt.Key_F5: "Bike",
+            Qt.Key_F6: "Tractor"
+        }
+        if event.key() in keys:
+            self.select_vehicle(keys[event.key()])
 
     def closeEvent(self, event):
         self.cap.release()
@@ -263,48 +263,62 @@ class TollApp(QWidget):
 class LoginScreen(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Toll Booth Login")
-        self.setGeometry(600, 300, 400, 300)
+        self.setWindowTitle("🚧 Toll Booth Login")
+        self.setFixedSize(400, 350)
         self.setStyleSheet("""
-            QWidget { background-color: #ecf0f1; font-family: 'Segoe UI'; }
-            QLabel { font-size: 20px; color: #2c3e50; font-weight: bold; }
+            QWidget {
+                background-color: #f5f6fa;
+                font-family: 'Segoe UI', sans-serif;
+            }
+            QLabel#title {
+                font-size: 24px;
+                color: #2c3e50;
+                font-weight: bold;
+            }
             QLineEdit {
-                padding: 10px;
-                border: 2px solid #bdc3c7;
-                border-radius: 10px;
+                padding: 12px;
+                border: 2px solid #dcdde1;
+                border-radius: 8px;
                 font-size: 16px;
             }
             QPushButton {
-                padding: 10px;
-                background-color: #2980b9;
+                padding: 12px;
+                background-color: #273c75;
                 color: white;
                 font-size: 16px;
+                font-weight: bold;
                 border: none;
-                border-radius: 10px;
+                border-radius: 8px;
             }
-            QPushButton:hover { background-color: #1f618d; }
+            QPushButton:hover {
+                background-color: #192a56;
+            }
         """)
         self.init_ui()
 
     def init_ui(self):
-        self.title = QLabel("⚧ Toll Booth Login")
+        self.title = QLabel("🚧 Toll Booth Login")
+        self.title.setObjectName("title")
         self.title.setAlignment(Qt.AlignCenter)
+
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Enter Username")
+
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("Enter Password")
         self.password_input.setEchoMode(QLineEdit.Password)
+
         self.login_button = QPushButton("Login")
         self.login_button.clicked.connect(self.login)
 
         layout = QVBoxLayout()
-        layout.addStretch()
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(20)
         layout.addWidget(self.title)
-        layout.addSpacing(20)
         layout.addWidget(self.username_input)
         layout.addWidget(self.password_input)
         layout.addWidget(self.login_button)
-        layout.addStretch()
+
         self.setLayout(layout)
 
     def login(self):
@@ -318,7 +332,7 @@ class LoginScreen(QWidget):
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     login = LoginScreen()
     login.show()
