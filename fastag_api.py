@@ -36,7 +36,6 @@ def check_fastag(plate_number):
                 "vehicle_class": "Unknown"
             }
 
-        # Store it for future use
         FASTAG_DATABASE[plate_number] = new_record
         return new_record
 

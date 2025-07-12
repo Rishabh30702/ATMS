@@ -7,9 +7,20 @@ import threading
 import serial  # Requires pyserial
 from datetime import datetime
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QMessageBox, QComboBox, QFileDialog, QCheckBox, QTableWidget,
-    QTableWidgetItem, QHeaderView
+    QApplication,
+    QWidget,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QMessageBox,
+    QComboBox,
+    QFileDialog,
+    QCheckBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from PyQt5.QtCore import QTimer, Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
@@ -17,24 +28,20 @@ from ultralytics import YOLO
 import easyocr
 from db import authenticate_user, get_user_lane, log_entry
 from fastag_api import check_fastag, deduct_fastag_amount
+import serial.tools.list_ports
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
 CAPTURE_FOLDER = "captured"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
 model = YOLO("best2.pt")
 
-PRICING = {
-    "Car": 60,
-    "Bus": 120,
-    "Truck": 150,
-    "Auto": 40,
-    "Bike": 30,
-    "Tractor": 80
-}
+PRICING = {"Car": 60, "Bus": 120, "Truck": 150, "Auto": 40, "Bike": 30, "Tractor": 80}
+
 
 def is_valid_plate(text):
     pattern = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,2}[0-9]{4}$"
     return re.match(pattern, text) is not None
+
 
 def detect_plate(reader, frame):
     results = model(frame)
@@ -54,21 +61,53 @@ def detect_plate(reader, frame):
                     return clean, (x1, y1, x2, y2)
     return None, None
 
+
+def find_rfid_port():
+    ports = serial.tools.list_ports.comports()
+    for port in ports:
+        print(f"Detected: {port.device} - {port.description}")
+        # You can adjust based on your device's description
+        if "USB" in port.description or "Serial" in port.description:
+            return port.device  # e.g., "COM3"
+    return None
+
+
+def start_rfid_listener(self, port):
+    def listen():
+        try:
+            ser = serial.Serial(port, 9600, timeout=1)
+            while True:
+                tag = ser.readline().decode().strip()
+                if tag:
+                    print(f"📶 RFID Tag Read: {tag}")
+                    self.handle_rfid_tag(tag)
+        except Exception as e:
+            print("RFID Error:", e)
+
+    threading.Thread(target=listen, daemon=True).start()
+
+
 class TollApp(QWidget):
     def __init__(self, user):
         super().__init__()
         self.user = user
-        self.lane = get_user_lane(user['username'])
+        self.lane = get_user_lane(user["username"])
+        self.relay_mode = None  # 'gpio', 'serial', or None
+        self.setup_boom_control()
         self.setWindowTitle(f"Toll Booth - Lane {self.lane}")
         self.setGeometry(100, 100, 1000, 600)
         self.anpr_status = QLabel("ANPR: Detecting...")
         self.rfid_status = QLabel("RFID: Listening...")
         self.anpr_status.setStyleSheet("color: green; font-weight: bold;")
         self.rfid_status.setStyleSheet("color: blue; font-weight: bold;")
-        
+
+        self.boom_status = QLabel("🔴 Boom: Closed")
+        self.boom_status.setStyleSheet("color: red; font-weight: bold;")
+
         self.setup_ui()  # Now it's safe to use these labels
-        
-        self.reader = easyocr.Reader(['en'], gpu=True)
+        self.setup_boom_control()
+
+        self.reader = easyocr.Reader(["en"], gpu=True)
         self.cap = cv2.VideoCapture(0)
 
         self.timer = QTimer()
@@ -78,21 +117,11 @@ class TollApp(QWidget):
         self.last_detected_plate = ""
         self.current_frame = None
 
-        self.start_rfid_listener("COM3")  # Update COM port as required
-
-    def start_rfid_listener(self, port):
-        def listen():
-            try:
-                ser = serial.Serial(port, 9600, timeout=1)
-                while True:
-                    tag = ser.readline().decode().strip()
-                    if tag:
-                        self.plate_input.setText(tag.upper())
-                        self.handle_auto_deduction(tag.upper())
-            except Exception as e:
-                print("RFID Error:", e)
-
-        threading.Thread(target=listen, daemon=True).start()
+        rfid_port = find_rfid_port()
+        if rfid_port:
+            self.start_rfid_listener(rfid_port)
+        else:
+            print("⚠️ No RFID COM port found.")
 
     def setup_ui(self):
         vehicle_types = [
@@ -101,7 +130,7 @@ class TollApp(QWidget):
             ("Truck", "icons/truck.png", "F3"),
             ("Auto", "icons/auto.jpg", "F4"),
             ("Bike", "icons/bike.jpg", "F5"),
-            ("Tractor", "icons/tractor.jpg", "F6")
+            ("Tractor", "icons/tractor.jpg", "F6"),
         ]
         self.vehicle_buttons = QHBoxLayout()
         self.vehicle_btns = {}
@@ -136,14 +165,21 @@ class TollApp(QWidget):
         self.info_table.setTextFormat(Qt.RichText)
 
         self.transactions_table = QTableWidget(5, 5)
-        self.transactions_table.setHorizontalHeaderLabels(["Plate", "Vehicle", "FASTag", "Operator", "Time"])
-        self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.transactions_table.setHorizontalHeaderLabels(
+            ["Plate", "Vehicle", "FASTag", "Operator", "Time"]
+        )
+        self.transactions_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
 
         self.confirm_button = QPushButton("Confirm Transaction")
         self.confirm_button.clicked.connect(self.handle_transaction)
 
         self.export_button = QPushButton("Export Logs")
         self.export_button.clicked.connect(self.export_logs)
+
+        self.test_boom_button = QPushButton("Test Boom")
+        self.test_boom_button.clicked.connect(lambda: self.toggle_boom(True))
 
         form = QVBoxLayout()
         form.addWidget(self.plate_input)
@@ -153,12 +189,35 @@ class TollApp(QWidget):
         form.addWidget(self.info_table)
         form.addWidget(self.confirm_button)
         form.addWidget(self.export_button)
+        form.addWidget(self.test_boom_button)
 
         right = QVBoxLayout()
         right.addWidget(self.transactions_table)
         right.addLayout(form)
 
+        # -------- Header Layout --------
+        header_layout = QHBoxLayout()
+        
+        company_label = QLabel("🚗 <b>Valliento Tech</b>")
+        company_label.setStyleSheet("font-size: 20px; color: #273c75; font-weight: bold;")
+        
+        vendor_label = QLabel("🔧 Powered by XYZ Solutions")
+        vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d; margin left: 10px;")
+        
+        lane_label = QLabel(f"🛣️ Lane: {self.lane}")
+        lane_label.setStyleSheet("font-size: 13px; color: #2d3436;")
+        
+        header_info = QVBoxLayout()
+        header_info.addWidget(company_label)
+        header_info.addWidget(vendor_label)
+        header_info.addWidget(lane_label)
+        
+        header_layout.addLayout(header_info)
+        header_layout.addStretch()
+    
+
         main = QVBoxLayout()
+        main.addLayout(header_layout)
         main.addLayout(self.vehicle_buttons)
         row = QHBoxLayout()
         row.addWidget(self.video_label)
@@ -167,6 +226,9 @@ class TollApp(QWidget):
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.anpr_status)
         status_layout.addWidget(self.rfid_status)
+
+        status_layout.addWidget(self.boom_status)
+
         main.addLayout(status_layout)
 
         main.addLayout(row)
@@ -203,45 +265,190 @@ class TollApp(QWidget):
         winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
         now = datetime.now().strftime("%H:%M:%S")
 
-        if tag_info['status'] == 'Valid':
-            amount = PRICING.get(tag_info.get('vehicle_class', 'Car'), 60)
-            if tag_info['balance'] >= amount:
+        if tag_info["status"] == "Valid":
+            amount = PRICING.get(tag_info.get("vehicle_class", "Car"), 60)
+            if tag_info["balance"] >= amount:
                 deduct_fastag_amount(plate, amount)
                 self.capture_image(plate)
-                log_entry(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'], self.user['username'], self.lane)
-                self.update_transactions(plate, tag_info.get('vehicle_class', 'Car'), tag_info['status'])
+                log_entry(
+                    plate,
+                    tag_info.get("vehicle_class", "Car"),
+                    tag_info["status"],
+                    self.user["username"],
+                    self.lane,
+                )
+                self.update_transactions(
+                    plate, tag_info.get("vehicle_class", "Car"), tag_info["status"]
+                )
 
-        self.info_table.setText(f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | <b>Balance:</b> ₹{tag_info.get('balance', 0)}")
+        self.info_table.setText(
+            f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | <b>Balance:</b> ₹{tag_info.get('balance', 0)}"
+        )
+
+    def toggle_boom(self, open_boom=True):
+        if open_boom:
+            self.boom_status.setText("🟢 Boom: Open")
+            self.boom_status.setStyleSheet("color: green; font-weight: bold;")
+            print("🚧 Boom barrier opened!")
+
+            if hasattr(self, "gpio_mode") and self.gpio_mode:
+                self.GPIO.output(self.BOOM_PIN, self.GPIO.HIGH)
+            elif hasattr(self, "relay_serial") and self.relay_serial:
+                self.relay_serial.write(b"O")  # Open command
+        else:
+            self.boom_status.setText("🔴 Boom: Closed")
+            self.boom_status.setStyleSheet("color: red; font-weight: bold;")
+            print("🚧 Boom barrier closed!")
+
+            if hasattr(self, "gpio_mode") and self.gpio_mode:
+                self.GPIO.output(self.BOOM_PIN, self.GPIO.LOW)
+            elif hasattr(self, "relay_serial") and self.relay_serial:
+                self.relay_serial.write(b"C")  # Close command
+
+        # Auto-close after 3 seconds
+        QTimer.singleShot(3000, lambda: self.toggle_boom(False))
+
+    def handle_rfid_tag(self, tag):
+        self.plate_input.setText(tag.upper())
+        tag_info = check_fastag(tag)
+
+        winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+        now = datetime.now().strftime("%H:%M:%S")
+
+        if tag_info["status"] == "Valid":
+            amount = PRICING.get(tag_info.get("vehicle_class", "Car"), 60)
+            if tag_info["balance"] >= amount:
+                deduct_fastag_amount(tag, amount)
+                self.capture_image(tag)
+                log_entry(
+                    tag,
+                    tag_info.get("vehicle_class", "Car"),
+                    tag_info["status"],
+                    self.user["username"],
+                    self.lane,
+                )
+                self.update_transactions(
+                    tag, tag_info.get("vehicle_class", "Car"), tag_info["status"]
+                )
+
+        self.info_table.setText(
+            f"<b>Plate:</b> {tag} | <b>Status:</b> {tag_info['status']} | "
+            f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
+            f"<b>Class:</b> {tag_info.get('vehicle_class', 'Unknown')} | "
+            f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
+        )
 
     def handle_transaction(self):
         plate = self.plate_input.text().strip().upper()
         amount = self.amount_input.text().strip()
         vehicle = self.vehicle_type.currentText()
+
         if not plate or not amount:
             QMessageBox.warning(self, "Missing Info", "Enter plate and amount.")
             return
+
         try:
             amount = float(amount)
         except:
             QMessageBox.warning(self, "Invalid Amount", "Amount must be a number.")
             return
+
         tag_info = check_fastag(plate)
-        if tag_info['status'] != 'Valid' and not self.no_fastag_checkbox.isChecked():
-            QMessageBox.warning(self, "FASTag Error", "FASTag invalid. Select 'Proceed without FASTag'.")
+        winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        now = datetime.now().strftime("%H:%M:%S")
+
+        if tag_info["status"] != "Valid" and not self.no_fastag_checkbox.isChecked():
+            QMessageBox.warning(
+                self, "FASTag Error", "FASTag invalid. Select 'Proceed without FASTag'."
+            )
             return
-        if tag_info['status'] == 'Valid' and tag_info['balance'] >= amount:
-            deduct_fastag_amount(plate, amount)
-        self.capture_image(plate)
-        log_entry(plate, vehicle, tag_info['status'], self.user['username'], self.lane)
-        self.update_transactions(plate, vehicle, tag_info['status'])
+
+        if tag_info["status"] == "Valid":
+            if tag_info["balance"] >= amount:
+                deduct_fastag_amount(plate, amount)
+                self.capture_image(plate)
+                log_entry(
+                    plate, vehicle, tag_info["status"], self.user["username"], self.lane
+                )
+                self.update_transactions(plate, vehicle, tag_info["status"])
+
+                # ✅ Show success message
+                QMessageBox.information(
+                    self,
+                    "FASTag Deducted",
+                    f"₹{amount} deducted from {tag_info['tag_id']}.\nNew Balance: ₹{tag_info['balance']:.2f}",
+                )
+
+                # ✅ Simulate Boom Gate Opening
+                print("🚦 Boom gate OPEN (manual confirm)")
+
+                # ✅ Optional: Voice feedback
+                if hasattr(self, "tts"):
+                    self.tts.say(f"{amount} rupees deducted from FASTag.")
+                    self.tts.runAndWait()
+
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Insufficient Balance",
+                    f"Balance ₹{tag_info['balance']} is less than required ₹{amount}.",
+                )
+                return
+
+        else:
+            # Manual override transaction
+            self.capture_image(plate)
+            log_entry(plate, vehicle, "Manual", self.user["username"], self.lane)
+            self.update_transactions(plate, vehicle, "Manual")
+            QMessageBox.information(
+                self, "Manual Transaction", f"Manual transaction logged for {plate}."
+            )
+
+            # ✅ Optional: Simulate boom for manual override
+            print("🚦 Boom gate OPEN (manual override)")
+
+    def setup_boom_control(self):
+        # Try Raspberry Pi GPIO first
+        try:
+            import RPi.GPIO as GPIO
+
+            self.GPIO = GPIO
+            self.gpio_mode = True
+            GPIO.setmode(GPIO.BCM)
+            self.BOOM_PIN = 18
+            GPIO.setup(self.BOOM_PIN, GPIO.OUT)
+            GPIO.output(self.BOOM_PIN, GPIO.LOW)
+            print("✅ GPIO Boom setup complete.")
+        except ImportError:
+            self.gpio_mode = False
+            print("❌ GPIO not available, trying serial relay...")
+
+            try:
+                self.relay_serial = serial.Serial(
+                    "COM4", 9600, timeout=1
+                )  # Change COM4 if needed
+                print("✅ Serial relay connected.")
+            except Exception as e:
+                print(f"❌ Serial relay not available: {e}")
+                self.relay_serial = None
 
     def capture_image(self, plate):
         if self.current_frame is not None:
-            filename = os.path.join(CAPTURE_FOLDER, f"{plate}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
+            filename = os.path.join(
+                CAPTURE_FOLDER,
+                f"{plate}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+            )
             cv2.imwrite(filename, self.current_frame)
 
     def update_transactions(self, plate, vehicle, status):
-        row = [plate, vehicle, status, self.user['username'], datetime.now().strftime("%H:%M:%S")]
+        row = [
+            plate,
+            vehicle,
+            status,
+            self.user["username"],
+            datetime.now().strftime("%H:%M:%S"),
+        ]
         self.transactions_table.insertRow(0)
         for col, val in enumerate(row):
             self.transactions_table.setItem(0, col, QTableWidgetItem(str(val)))
@@ -258,7 +465,7 @@ class TollApp(QWidget):
             Qt.Key_F3: "Truck",
             Qt.Key_F4: "Auto",
             Qt.Key_F5: "Bike",
-            Qt.Key_F6: "Tractor"
+            Qt.Key_F6: "Tractor",
         }
         if event.key() in keys:
             self.select_vehicle(keys[event.key()])
@@ -266,12 +473,14 @@ class TollApp(QWidget):
     def closeEvent(self, event):
         self.cap.release()
 
+
 class LoginScreen(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("🚧 Toll Booth Login")
         self.setFixedSize(400, 350)
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QWidget {
                 background-color: #f5f6fa;
                 font-family: 'Segoe UI', sans-serif;
@@ -299,7 +508,8 @@ class LoginScreen(QWidget):
             QPushButton:hover {
                 background-color: #192a56;
             }
-        """)
+        """
+        )
         self.init_ui()
 
     def init_ui(self):
@@ -337,7 +547,9 @@ class LoginScreen(QWidget):
             self.main_app.show()
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password")
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     login = LoginScreen()
     login.show()
