@@ -4,6 +4,8 @@ import cv2
 import re
 import winsound
 import threading
+import time
+import glob
 import serial  # Requires pyserial
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -22,6 +24,10 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
 )
+from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QTableWidgetItem
+
 from PyQt5.QtCore import QTimer, Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
 from ultralytics import YOLO
@@ -34,6 +40,17 @@ BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
 CAPTURE_FOLDER = "captured"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
 model = YOLO("best2.pt")
+
+def clean_old_images(folder, days=15):
+    """Deletes .jpg images older than the given number of days in the specified folder."""
+    cutoff = time.time() - (days * 86400)
+    for filepath in glob.glob(os.path.join(folder, "*.jpg")):
+        if os.path.isfile(filepath) and os.path.getmtime(filepath) < cutoff:
+            try:
+                os.remove(filepath)
+                print(f"🗑️ Deleted old image: {filepath}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete {filepath}: {e}")
 
 PRICING = {"Car": 60, "Bus": 120, "Truck": 150, "Auto": 40, "Bike": 30, "Tractor": 80}
 
@@ -90,6 +107,7 @@ def start_rfid_listener(self, port):
 class TollApp(QWidget):
     def __init__(self, user):
         super().__init__()
+        self.last_cleanup = None
         self.user = user
         self.lane = get_user_lane(user["username"])
         self.relay_mode = None  # 'gpio', 'serial', or None
@@ -135,7 +153,7 @@ class TollApp(QWidget):
         self.vehicle_buttons = QHBoxLayout()
         self.vehicle_btns = {}
         for label, path, key in vehicle_types:
-            btn = QPushButton(f"{label}\\n[{key}]")
+            btn = QPushButton(f"{key}")
             btn.setIcon(QIcon(path))
             btn.setIconSize(QSize(80, 80))
             btn.setFixedSize(140, 100)
@@ -171,6 +189,7 @@ class TollApp(QWidget):
         self.transactions_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch
         )
+        self.transactions_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.confirm_button = QPushButton("Confirm Transaction")
         self.confirm_button.clicked.connect(self.handle_transaction)
@@ -190,6 +209,11 @@ class TollApp(QWidget):
         form.addWidget(self.confirm_button)
         form.addWidget(self.export_button)
         form.addWidget(self.test_boom_button)
+
+        self.plate_input.setFixedHeight(40)
+        self.amount_input.setFixedHeight(40)
+        self.vehicle_type.setFixedHeight(40)
+
 
         right = QVBoxLayout()
         right.addWidget(self.transactions_table)
@@ -262,7 +286,7 @@ class TollApp(QWidget):
 
         # Boom Icon
         self.boom_icon = QLabel()
-        self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(32, 32))
+        self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(70, 70))
         self.boom_icon.setToolTip("Boom Barrier")
         bottom_status_layout.addWidget(self.boom_icon)
 
@@ -282,22 +306,56 @@ class TollApp(QWidget):
         main.addLayout(bottom_status_layout)
 
         self.setLayout(main)
+    
+    def capture_image(self, plate):
+        if self.current_frame is not None:
+            clean_old_images(CAPTURE_FOLDER, days=15)
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            vehicle = self.vehicle_type.currentText() if self.vehicle_type else "Unknown"
+            filename = os.path.join(
+                CAPTURE_FOLDER,
+                f"{plate}_{vehicle}_{timestamp}.jpg"
+            )
+            cv2.imwrite(filename, self.current_frame)
+            self.toggle_boom(True)
+            print(f"📸 Captured image saved: {filename}")
+
 
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret:
             return
+
         self.current_frame = frame.copy()
         self.frame_count += 1
+
         if self.frame_count % 10 == 0:
             plate, box = detect_plate(self.reader, frame)
-            if plate and plate != self.last_detected_plate:
-                self.last_detected_plate = plate
-                self.plate_input.setText(plate)
-                self.handle_auto_deduction(plate)
+
+            if plate:
+                # Only proceed if the plate is different or 3 seconds have passed since last detection
+                if plate != self.last_detected_plate or time.time() - getattr(self, 'last_plate_time', 0) > 3:
+                    self.last_detected_plate = plate
+                    self.last_plate_time = time.time()
+
+                    self.plate_input.setText(plate)
+
+                    tag_info = check_fastag(plate)
+                    vehicle_class = tag_info.get("vehicle_class", "Car")
+
+                    if vehicle_class in PRICING:
+                        index = self.vehicle_type.findText(vehicle_class)
+                        if index != -1:
+                            self.vehicle_type.setCurrentIndex(index)
+
+                    self.handle_auto_deduction_with_taginfo(plate, tag_info)
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
+
+
 
     def set_amount_by_vehicle(self):
         vehicle = self.vehicle_type.currentText()
@@ -309,16 +367,14 @@ class TollApp(QWidget):
         if index >= 0:
             self.vehicle_type.setCurrentIndex(index)
 
-    def handle_auto_deduction(self, plate):
-        tag_info = check_fastag(plate)
+    def handle_auto_deduction_with_taginfo(self, plate, tag_info):
         winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
-        now = datetime.now().strftime("%H:%M:%S")
 
         if tag_info["status"] == "Valid":
             amount = PRICING.get(tag_info.get("vehicle_class", "Car"), 60)
             if tag_info["balance"] >= amount:
                 deduct_fastag_amount(plate, amount)
-                self.capture_image(plate)
+                self.capture_image(plate)  # ✅ Capture every new deduction
                 log_entry(
                     plate,
                     tag_info.get("vehicle_class", "Car"),
@@ -330,15 +386,21 @@ class TollApp(QWidget):
                     plate, tag_info.get("vehicle_class", "Car"), tag_info["status"]
                 )
 
+        # Update info table
         self.info_table.setText(
-            f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | <b>Balance:</b> ₹{tag_info.get('balance', 0)}"
+            f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | "
+            f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
+            f"<b>Class:</b> {tag_info.get('vehicle_class', 'Unknown')} | "
+            f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
         )
+
+
 
     def toggle_boom(self, open_boom=True):
         if open_boom:
             self.boom_status.setText("🟢 Boom: Open")
             self.boom_status.setStyleSheet("color: green; font-weight: bold;")
-            self.boom_icon.setPixmap(QPixmap("icons/boomopen.jpg").scaled(32, 32))
+            self.boom_icon.setPixmap(QPixmap("icons/boomopen.jpg").scaled(70, 70))
             print("🚧 Boom barrier opened!")
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
@@ -348,7 +410,7 @@ class TollApp(QWidget):
         else:
             self.boom_status.setText("🔴 Boom: Closed")
             self.boom_status.setStyleSheet("color: red; font-weight: bold;")
-            self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(32, 32))
+            self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(70, 70))
             print("🚧 Boom barrier closed!")
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
@@ -360,35 +422,42 @@ class TollApp(QWidget):
         QTimer.singleShot(3000, lambda: self.toggle_boom(False))
 
     def handle_rfid_tag(self, tag):
-        self.plate_input.setText(tag.upper())
-        tag_info = check_fastag(tag)
+     tag = tag.upper()
+     self.plate_input.setText(tag)
+     tag_info = check_fastag(tag)
 
-        winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
+     # ✅ Auto-select vehicle class from FASTag response
+     vehicle_class = tag_info.get("vehicle_class", "Car")
+     if vehicle_class in PRICING:
+         index = self.vehicle_type.findText(vehicle_class)
+         if index != -1:
+             self.vehicle_type.setCurrentIndex(index)
 
-        now = datetime.now().strftime("%H:%M:%S")
+     winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
 
-        if tag_info["status"] == "Valid":
-            amount = PRICING.get(tag_info.get("vehicle_class", "Car"), 60)
-            if tag_info["balance"] >= amount:
-                deduct_fastag_amount(tag, amount)
-                self.capture_image(tag)
-                log_entry(
-                    tag,
-                    tag_info.get("vehicle_class", "Car"),
-                    tag_info["status"],
-                    self.user["username"],
-                    self.lane,
-                )
-                self.update_transactions(
-                    tag, tag_info.get("vehicle_class", "Car"), tag_info["status"]
-                )
+     now = datetime.now().strftime("%H:%M:%S")
 
-        self.info_table.setText(
-            f"<b>Plate:</b> {tag} | <b>Status:</b> {tag_info['status']} | "
-            f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
-            f"<b>Class:</b> {tag_info.get('vehicle_class', 'Unknown')} | "
-            f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
-        )
+     if tag_info["status"] == "Valid":
+         amount = PRICING.get(vehicle_class, 60)
+         if tag_info["balance"] >= amount:
+             deduct_fastag_amount(tag, amount)
+             self.capture_image(tag)
+             log_entry(
+                 tag,
+                 vehicle_class,
+                 tag_info["status"],
+                 self.user["username"],
+                 self.lane,
+             )
+             self.update_transactions(tag, vehicle_class, tag_info["status"])
+
+     self.info_table.setText(
+         f"<b>Plate:</b> {tag} | <b>Status:</b> {tag_info['status']} | "
+         f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
+         f"<b>Class:</b> {vehicle_class} | "
+         f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
+     )
+
 
     def handle_transaction(self):
         plate = self.plate_input.text().strip().upper()
@@ -484,27 +553,26 @@ class TollApp(QWidget):
                 print(f"❌ Serial relay not available: {e}")
                 self.relay_serial = None
 
-    def capture_image(self, plate):
-        if self.current_frame is not None:
-            filename = os.path.join(
-                CAPTURE_FOLDER,
-                f"{plate}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
-            )
-            cv2.imwrite(filename, self.current_frame)
 
+   
     def update_transactions(self, plate, vehicle, status):
-        row = [
-            plate,
-            vehicle,
-            status,
-            self.user["username"],
-            datetime.now().strftime("%H:%M:%S"),
-        ]
-        self.transactions_table.insertRow(0)
-        for col, val in enumerate(row):
-            self.transactions_table.setItem(0, col, QTableWidgetItem(str(val)))
-        if self.transactions_table.rowCount() > 5:
-            self.transactions_table.removeRow(5)
+        row_data = [plate, vehicle, status, self.user["username"], datetime.now().strftime("%H:%M:%S")]
+
+        if self.transactions_table.rowCount() == 0:
+            self.transactions_table.insertRow(0)
+
+        # Always overwrite the first row
+        for col, val in enumerate(row_data):
+            item = QTableWidgetItem(str(val))
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # Make it read-only
+            item.setBackground(Qt.green)
+            item.setForeground(Qt.black)
+            self.transactions_table.setItem(0, col, item)
+
+        # Remove extra rows (should be none ideally)
+        while self.transactions_table.rowCount() > 1:
+            self.transactions_table.removeRow(1)
+
 
     def export_logs(self):
         QMessageBox.information(self, "Info", "All logs are stored in logs.db")
