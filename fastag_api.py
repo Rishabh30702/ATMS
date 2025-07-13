@@ -2,7 +2,7 @@ import random
 
 FASTAG_DATABASE = {
     "MH14BK6899": {"status": "Valid", "tag_id": "FT12345", "balance": 60, "vehicle_class": "Car"},
-    "UP32GH5678": {"status": "Valid", "tag_id": "FT56789", "balance": 90.75, "vehicle_class": "Truck"},
+    "KL65AN7722": {"status": "Valid", "tag_id": "FT56789", "balance": 90.75, "vehicle_class": "Truck"},
     "MH12XY4321": {"status": "Invalid", "tag_id": None, "balance": 0.00, "vehicle_class": "Unknown"},
 }
 

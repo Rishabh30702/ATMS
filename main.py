@@ -195,29 +195,54 @@ class TollApp(QWidget):
         right.addWidget(self.transactions_table)
         right.addLayout(form)
 
-        # -------- Header Layout --------
+       # --- Top Header Row (Company & Vendor) ---
         header_layout = QHBoxLayout()
-        
-        company_label = QLabel("🚗 <b>Valliento Tech</b>")
-        company_label.setStyleSheet("font-size: 20px; color: #273c75; font-weight: bold;")
-        
-        vendor_label = QLabel("🔧 Powered by XYZ Solutions")
-        vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d; margin left: 10px;")
-        
-        lane_label = QLabel(f"🛣️ Lane: {self.lane}")
-        lane_label.setStyleSheet("font-size: 13px; color: #2d3436;")
-        
-        header_info = QVBoxLayout()
-        header_info.addWidget(company_label)
-        header_info.addWidget(vendor_label)
-        header_info.addWidget(lane_label)
-        
-        header_layout.addLayout(header_info)
+
+        # Company Logo
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("icons/vallenlogo.jpg")  # Use your actual path here
+        logo_pixmap = logo_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_label.setPixmap(logo_pixmap)
+
+        company_name = QLabel("Valliento Tech")
+        company_name.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
+
+        company_layout = QHBoxLayout()
+        company_layout.addWidget(logo_label)
+        company_layout.addWidget(company_name)
+        company_layout.setAlignment(Qt.AlignLeft)
+
+        company_label = QLabel("")
+        company_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
+
+        vendor_label = QLabel("🔧 XYZ Solutions")
+        vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
+
+        header_layout = QHBoxLayout()
+        header_layout.addLayout(company_layout)
         header_layout.addStretch()
+
+        vendor_label = QLabel("🔧 XYZ Solutions")
+        vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
+        header_layout.addWidget(vendor_label)
+        header_layout.addWidget(company_label)
+        header_layout.addStretch()
+        header_layout.addWidget(vendor_label)
+
+        # --- Centered Toll Lane Title ---
+        lane_title = QLabel(f"🚧 Toll Booth - Lane {self.lane}")
+        lane_title.setAlignment(Qt.AlignCenter)
+        lane_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #273c75;")
     
 
         main = QVBoxLayout()
-        main.addLayout(header_layout)
+        main.addLayout(header_layout)    
+
+        lane_title = QLabel(f"🚧 Toll Booth - Lane {self.lane}")
+        lane_title.setAlignment(Qt.AlignCenter)
+        lane_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #273c75;")
+        main.addWidget(lane_title)
+        main.addLayout(self.vehicle_buttons)
         main.addLayout(self.vehicle_buttons)
         row = QHBoxLayout()
         row.addWidget(self.video_label)
@@ -232,6 +257,30 @@ class TollApp(QWidget):
         main.addLayout(status_layout)
 
         main.addLayout(row)
+                # --- Bottom Control Icons (Boom, Indicator, Camera) ---
+        bottom_status_layout = QHBoxLayout()
+
+        # Boom Icon
+        self.boom_icon = QLabel()
+        self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(32, 32))
+        self.boom_icon.setToolTip("Boom Barrier")
+        bottom_status_layout.addWidget(self.boom_icon)
+
+        # Indicator Icon
+        self.indicator_icon = QLabel()
+        self.indicator_icon.setPixmap(QPixmap("icons/indicatorOff.jpg").scaled(32, 32))
+        self.indicator_icon.setToolTip("Indicator Lights")
+        bottom_status_layout.addWidget(self.indicator_icon)
+
+        # Camera Icon
+        self.camera_icon = QLabel()
+        self.camera_icon.setPixmap(QPixmap("icons/camOff.jpg").scaled(32, 32))
+        self.camera_icon.setToolTip("Camera Active")
+        bottom_status_layout.addWidget(self.camera_icon)
+
+        bottom_status_layout.addStretch()
+        main.addLayout(bottom_status_layout)
+
         self.setLayout(main)
 
     def update_frame(self):
@@ -289,6 +338,7 @@ class TollApp(QWidget):
         if open_boom:
             self.boom_status.setText("🟢 Boom: Open")
             self.boom_status.setStyleSheet("color: green; font-weight: bold;")
+            self.boom_icon.setPixmap(QPixmap("icons/boomopen.jpg").scaled(32, 32))
             print("🚧 Boom barrier opened!")
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
@@ -298,6 +348,7 @@ class TollApp(QWidget):
         else:
             self.boom_status.setText("🔴 Boom: Closed")
             self.boom_status.setStyleSheet("color: red; font-weight: bold;")
+            self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(32, 32))
             print("🚧 Boom barrier closed!")
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
