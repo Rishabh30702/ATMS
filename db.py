@@ -17,16 +17,18 @@ def init_db():
 
     # Create vehicle logs table
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS vehicle_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plate TEXT,
-            vehicle_type TEXT,
-            fastag_status TEXT,
-            operator TEXT,
-            lane_id TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    CREATE TABLE IF NOT EXISTS vehicle_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plate TEXT,
+        vehicle_type TEXT,
+        fastag_status TEXT,
+        operator TEXT,
+        lane_id TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT DEFAULT (datetime('now'))
+    )
+''')
+
 
     conn.commit()
     conn.close()

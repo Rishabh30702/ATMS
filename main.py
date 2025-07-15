@@ -2,6 +2,7 @@ import sys
 import os
 import cv2
 import re
+from sync_worker import start_sync_thread
 import winsound
 import threading
 import time
@@ -693,4 +694,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     login = LoginScreen()
     login.show()
+     # ✅ Start background sync thread
+    start_sync_thread()
     sys.exit(app.exec_())
