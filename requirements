@@ -1,0 +1,10 @@
+opencv-python
+PyQt5
+easyocr
+ultralytics
+numpy
+pillow
+pyserial
+torch
+torchvision
+torchaudio
