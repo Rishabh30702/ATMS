@@ -6,7 +6,11 @@ from sync_worker import start_sync_thread
 import winsound
 import threading
 import time
+import json
+from rfid_listener import RFIDListener
+from log_helper import insert_log, insert_rfid_log
 import glob
+from log_helper import insert_log
 import serial  # Requires pyserial
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -24,10 +28,12 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QTextEdit
 )
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTableWidgetItem
+from rfid_listener import RFIDListener
 
 from PyQt5.QtCore import QTimer, Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
@@ -128,6 +134,11 @@ class TollApp(QWidget):
         self.rfid_status = QLabel("RFID: Listening...")
         self.anpr_status.setStyleSheet("color: green; font-weight: bold;")
         self.rfid_status.setStyleSheet("color: blue; font-weight: bold;")
+        
+        # Start RFID listener
+        self.rfid_thread = RFIDListener(on_tag_callback=self.handle_rfid_tag)
+        self.rfid_thread.start()
+
 
         self.boom_status = QLabel("🔴 Boom: Closed")
         self.boom_status.setStyleSheet("color: red; font-weight: bold;")
@@ -139,7 +150,7 @@ class TollApp(QWidget):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
-        self.timer.start(100)
+        self.timer.start(30)
         self.frame_count = 0
         self.last_detected_plate = ""
         self.current_frame = None
@@ -316,38 +327,47 @@ class TollApp(QWidget):
 
         self.setLayout(main)
     
-    def capture_image(self, plate):
-        if self.current_frame is not None:
-            clean_old_images(CAPTURE_FOLDER, days=15)
+    def capture_image(self, tag):
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                print("❌ Camera not accessible.")
+                return
 
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            vehicle = self.vehicle_type.currentText() if self.vehicle_type else "Unknown"
-            filename = os.path.join(
-                CAPTURE_FOLDER,
-                f"{plate}_{vehicle}_{timestamp}.jpg"
-            )
-            cv2.imwrite(filename, self.current_frame)
-            self.toggle_boom(True)
-            print(f"📸 Captured image saved: {filename}")
+            ret, frame = cap.read()
+            if ret:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                folder = "captures"
+                os.makedirs(folder, exist_ok=True)
+                filename = f"{folder}/{tag}_{timestamp}.jpg"
+                cv2.imwrite(filename, frame)
+                print(f"📸 Image saved: {filename}")
+            else:
+                print("❌ Failed to capture frame.")
+            cap.release()
+        except Exception as e:
+            print(f"❌ Error accessing camera: {e}")
 
 
     def update_frame(self):
+        if self.cap is None or not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                print("❌ Camera could not be opened.")
+                return
+
         ret, frame = self.cap.read()
-        if not ret:
+        if not ret or frame is None:
+            # print("⚠️ Failed to read from camera.")
             return
 
         self.current_frame = frame.copy()
         self.frame_count += 1
 
-        if not ret or frame is None:
-            print("⚠️ Failed to read from camera.")
-            return
-        
         if self.frame_count % 10 == 0:
             plate, box = detect_plate(self.reader, frame)
 
             if plate:
-                # Only proceed if the plate is different or 3 seconds have passed since last detection
                 if plate != self.last_detected_plate or time.time() - getattr(self, 'last_plate_time', 0) > 3:
                     self.last_detected_plate = plate
                     self.last_plate_time = time.time()
@@ -367,6 +387,7 @@ class TollApp(QWidget):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
+
 
 
 
@@ -435,43 +456,52 @@ class TollApp(QWidget):
         # Auto-close after 3 seconds
         QTimer.singleShot(3000, lambda: self.toggle_boom(False))
 
-    def handle_rfid_tag(self, tag):
+    def handle_rfid_tag(self, tag, lane_id):
+     insert_rfid_log(tag, lane_id)
+     print(f"📶 Tag from Lane {lane_id}: {tag}")
      tag = tag.upper()
      self.plate_input.setText(tag)
+    
      tag_info = check_fastag(tag)
-
-     # ✅ Auto-select vehicle class from FASTag response
      vehicle_class = tag_info.get("vehicle_class", "Car")
+    
+     # Auto-select vehicle class
      if vehicle_class in PRICING:
          index = self.vehicle_type.findText(vehicle_class)
          if index != -1:
              self.vehicle_type.setCurrentIndex(index)
-
+    
      winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
-
+    
      now = datetime.now().strftime("%H:%M:%S")
-
-     if tag_info["status"] == "Valid":
-         amount = PRICING.get(vehicle_class, 60)
-         if tag_info["balance"] >= amount:
-             deduct_fastag_amount(tag, amount)
-             self.capture_image(tag)
-             log_entry(
-                 tag,
-                 vehicle_class,
-                 tag_info["status"],
-                 self.user["username"],
-                 self.lane,
-             )
-             self.update_transactions(tag, vehicle_class, tag_info["status"])
-
+    
+     status = tag_info["status"]
+     balance = tag_info.get("balance", 0)
+     amount = PRICING.get(vehicle_class, 60)
+    
+     # Decide on deduction
+     if status == "Valid" and balance >= amount:
+         deduct_fastag_amount(tag, amount)
+         self.capture_image(tag)
+    
+         log_entry(
+             tag,
+             vehicle_class,
+             status,
+             self.user["username"],
+             lane_id
+         )
+         insert_log(lane_id, tag)
+    
+     # ✅ Always update the table regardless of status
+     self.update_transactions(tag, vehicle_class, status)
+    
      self.info_table.setText(
-         f"<b>Plate:</b> {tag} | <b>Status:</b> {tag_info['status']} | "
-         f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
+         f"<b>Plate:</b> {tag} | <b>Status:</b> {status} | "
+         f"<b>Balance:</b> ₹{balance} | "
          f"<b>Class:</b> {vehicle_class} | "
          f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
      )
-
 
     def handle_transaction(self):
         plate = self.plate_input.text().strip().upper()
@@ -574,23 +604,22 @@ class TollApp(QWidget):
             self.relay_serial = None
 
    
-    def update_transactions(self, plate, vehicle, status):
-        row_data = [plate, vehicle, status, self.user["username"], datetime.now().strftime("%H:%M:%S")]
+    def update_transactions(self, plate, vehicle_type, fastag_status):
+       row_position = self.transactions_table.rowCount()
+       self.transactions_table.insertRow(row_position)
 
-        if self.transactions_table.rowCount() == 0:
-            self.transactions_table.insertRow(0)
+       self.transactions_table.setItem(row_position, 0, QTableWidgetItem(plate))
+       self.transactions_table.setItem(row_position, 1, QTableWidgetItem(vehicle_type))
+       self.transactions_table.setItem(row_position, 2, QTableWidgetItem(fastag_status))
+       self.transactions_table.setItem(row_position, 3, QTableWidgetItem(self.user["username"]))
+       self.transactions_table.setItem(row_position, 4, QTableWidgetItem(datetime.now().strftime("%H:%M:%S")))
 
-        # Always overwrite the first row
-        for col, val in enumerate(row_data):
-            item = QTableWidgetItem(str(val))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # Make it read-only
-            item.setBackground(Qt.green)
-            item.setForeground(Qt.black)
-            self.transactions_table.setItem(0, col, item)
+       # Optional: Scroll to the latest row
+       self.transactions_table.scrollToBottom()
 
-        # Remove extra rows (should be none ideally)
-        while self.transactions_table.rowCount() > 1:
-            self.transactions_table.removeRow(1)
+       # Optional: Limit to last N rows (e.g., 50)
+       if self.transactions_table.rowCount() > 50:
+           self.transactions_table.removeRow(0)
 
 
     def export_logs(self):
@@ -609,10 +638,16 @@ class TollApp(QWidget):
             self.select_vehicle(keys[event.key()])
 
     def closeEvent(self, event):
-        self.cap.release()
-        if hasattr(self, "relay_serial") and self.relay_serial:
-            self.relay_serial.close()
-        print("📴 Application closed. Resources released.")
+        try:
+            if hasattr(self, 'rfid_listener'):
+                self.rfid_listener.stop()
+            if hasattr(self, 'toll_window'):
+                self.toll_window.close()
+        except Exception as e:
+            print("Error during close:", e)
+        event.accept()
+
+
 
 
 class LoginScreen(QWidget):
@@ -677,6 +712,21 @@ class LoginScreen(QWidget):
         layout.addWidget(self.login_button)
 
         self.setLayout(layout)
+    
+    def handle_rfid_tag(self, lane_id, tag):
+        print(f"✅ [Lane {lane_id}] Received FASTag: {tag}")
+        self.vehicle_input.setText(tag)  # ✅ update GUI with tag
+        # You can also play sound or update database/logs here
+
+    def save_entry(self):
+        vehicle = self.vehicle_input.text()
+        vtype = self.type_dropdown.currentText()
+        if not vehicle:
+            QMessageBox.warning(self, "Missing", "Vehicle number is empty!")
+            return
+        print(f"🚗 Entry Saved: {vehicle}, Type: {vtype}")
+        winsound.Beep(1000, 200)  # ✅ feedback
+
 
     def login(self):
         username = self.username_input.text()
@@ -688,8 +738,7 @@ class LoginScreen(QWidget):
             self.main_app.show()
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password")
-
-
+        
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     login = LoginScreen()
