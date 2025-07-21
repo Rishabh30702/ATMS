@@ -134,6 +134,13 @@ class TollApp(QWidget):
         self.rfid_status = QLabel("RFID: Listening...")
         self.anpr_status.setStyleSheet("color: green; font-weight: bold;")
         self.rfid_status.setStyleSheet("color: blue; font-weight: bold;")
+        self.last_rfid_time = time.time()
+        self.rfid_status.setText("RFID: Not Connected")
+        self.rfid_status.setStyleSheet("color: red; font-weight: bold;")
+
+        self.rfid_timer = QTimer()
+        self.rfid_timer.timeout.connect(self.check_rfid_status)
+        self.rfid_timer.start(2000)  # every 2 seconds
         
         # Start RFID listener
         self.rfid_thread = RFIDListener(on_tag_callback=self.handle_rfid_tag)
@@ -326,6 +333,16 @@ class TollApp(QWidget):
         main.addLayout(bottom_status_layout)
 
         self.setLayout(main)
+
+    def check_rfid_status(self):
+        now = time.time()
+        if now - self.last_rfid_time < 5:
+            self.rfid_status.setText("RFID: Active")
+            self.rfid_status.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.rfid_status.setText("RFID: Not Connected")
+            self.rfid_status.setStyleSheet("color: red; font-weight: bold;")
+    
     
     def capture_image(self, tag):
         try:
