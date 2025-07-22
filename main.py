@@ -7,6 +7,7 @@ import winsound
 import threading
 import time
 import json
+from loop_listener import LoopListener
 from rfid_listener import RFIDListener
 from log_helper import insert_log, insert_rfid_log
 import glob
@@ -40,7 +41,7 @@ from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
 from ultralytics import YOLO
 import easyocr
 from db import authenticate_user, get_user_lane, log_entry
-from fastag_api import check_fastag, deduct_fastag_amount
+from fastag_api import check_fastag, deduct_fastag_amount,FASTAG_DATABASE
 import serial.tools.list_ports
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
@@ -125,6 +126,10 @@ class TollApp(QWidget):
         super().__init__()
         self.last_cleanup = None
         self.user = user
+        self.cam_index = None
+        self.loop_listener = LoopListener(callback=self.on_loop_detected)
+        self.loop_listener.start()
+        self.detect_camera_index()
         self.lane = get_user_lane(user["username"])
         self.relay_mode = None  # 'gpio', 'serial', or None
         self.setup_boom_control()
@@ -334,6 +339,110 @@ class TollApp(QWidget):
 
         self.setLayout(main)
 
+    def verify_fastag(self, plate_number=None, tag_id=None):
+        # If plate is available, prefer it
+        if plate_number:
+            fastag_info = check_fastag(plate_number)
+            if fastag_info["status"] == "Valid":
+                return fastag_info
+        # Else fallback to RFID tag
+        elif tag_id:
+            # Simulate checking via tag_id (you can add reverse mapping logic here if needed)
+            for number, info in FASTAG_DATABASE.items():
+                if info["tag_id"] == tag_id:
+                    if info["status"] == "Valid":
+                        return info
+        return None
+
+
+    def log_event(self, event, tag_id=None, image_path=None, plate_number=None, vehicle_class=None, balance=None):
+        print(f"[LOG] Event: {event}")
+        print(f"      Plate: {plate_number}, Tag ID: {tag_id}, Class: {vehicle_class}, Balance: {balance}")
+
+        # Determine FASTag status
+        if balance is None:
+            fastag_status = "unknown"
+        elif balance >= 100:
+            fastag_status = "valid"
+        elif 0 < balance < 100:
+            fastag_status = "low balance"
+        else:
+            fastag_status = "invalid"
+
+        # Fallback values
+        plate = plate_number or "Unknown"
+        v_type = vehicle_class or "Unknown"
+        operator = self.logged_in_user.get("username", "unknown")
+        lane_id = self.logged_in_user.get("lane_id", "0")
+
+        try:
+            # Log into SQLite
+            log_entry(plate, v_type, fastag_status, operator, lane_id)
+            print("✅ Event logged to SQLite using db.py")
+
+            # Update GUI table
+            self.update_transactions(plate, v_type, fastag_status)
+
+            # Emit signal to update any listeners
+            self.vehicleLogged.emit({
+                "plate": plate,
+                "vehicle_type": v_type,
+                "fastag_status": fastag_status,
+                "operator": operator,
+                "lane_id": lane_id
+            })
+
+        except Exception as e:
+             print("❌ Failed to log event:", e)
+
+
+    
+    def on_loop_detected(self):
+        print("🚗 Vehicle on loop — detected inside MainWindow")
+
+        image_path = self.capture_image("from_loop")
+
+        plate_number = getattr(self, 'last_plate_number', None)
+        tag_id = getattr(self, 'last_fastag_id', None)
+
+        fastag_info = self.verify_fastag(plate_number=plate_number, tag_id=tag_id)
+
+        if fastag_info:
+            toll_amount = 50  # Or fetch from some config based on vehicle_class
+
+            success = deduct_fastag_amount(plate_number or tag_id, toll_amount)
+            if success:
+                print("✅ Toll deducted and barrier opened")
+                self.open_barrier()
+                self.log_event(
+                    f"FASTag OK - ₹{toll_amount} deducted",
+                    fastag_info["tag_id"],
+                    image_path,
+                    plate_number,
+                    fastag_info["vehicle_class"],
+                    fastag_info["balance"]
+                )
+            else:
+                print("❌ FASTag balance too low")
+                self.log_event(
+                    "FASTag valid but insufficient balance",
+                    fastag_info["tag_id"],
+                    image_path,
+                    plate_number,
+                    fastag_info["vehicle_class"],
+                    fastag_info["balance"]
+                )
+        else:
+            print("🚫 No valid FASTag found")
+            self.log_event(
+                "No valid FASTag",
+                tag_id,
+                image_path,
+                plate_number
+            )
+
+    
+
     def check_rfid_status(self):
         now = time.time()
         if now - self.last_rfid_time < 5:
@@ -343,15 +452,38 @@ class TollApp(QWidget):
             self.rfid_status.setText("RFID: Not Connected")
             self.rfid_status.setStyleSheet("color: red; font-weight: bold;")
     
+    def detect_camera_index(self, max_index=5):
+        for index in range(max_index):
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                cap.release()
+                print(f"✅ Camera detected at index {index}")
+                self.cam_index = index
+                return
+            cap.release()
+        print("❌ No working camera found.")
+        self.cam_index = None    
     
     def capture_image(self, tag):
         try:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                print("❌ Camera not accessible.")
+            if self.cam_index is None:
+                print("❌ No camera index available. Skipping capture.")
                 return
 
-            ret, frame = cap.read()
+            print(f"📷 Attempting to capture from camera index: {self.cam_index}")
+            time.sleep(1)  # Allow a short pause before accessing the camera
+            cap = cv2.VideoCapture(self.cam_index)  # ✅ Don't force a backend
+
+            if not cap.isOpened():
+                print(f"❌ Camera at index {self.cam_index} not accessible.")
+                return
+
+            time.sleep(0.5)
+            for _ in range(5):  # Warm-up by reading a few frames
+                ret, frame = cap.read()
+                if ret:
+                    break
+
             if ret:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 folder = "captures"
@@ -361,9 +493,12 @@ class TollApp(QWidget):
                 print(f"📸 Image saved: {filename}")
             else:
                 print("❌ Failed to capture frame.")
+
             cap.release()
+
         except Exception as e:
             print(f"❌ Error accessing camera: {e}")
+
 
 
     def update_frame(self):
@@ -454,6 +589,7 @@ class TollApp(QWidget):
             self.boom_status.setStyleSheet("color: green; font-weight: bold;")
             self.boom_icon.setPixmap(QPixmap("icons/boomopen.jpg").scaled(70, 70))
             print("🚧 Boom barrier opened!")
+            self.cap = cv2.VideoCapture(0)
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
                 self.GPIO.output(self.BOOM_PIN, self.GPIO.HIGH)
