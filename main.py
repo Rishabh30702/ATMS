@@ -43,6 +43,7 @@ import easyocr
 from db import authenticate_user, get_user_lane, log_entry
 from fastag_api import check_fastag, deduct_fastag_amount,FASTAG_DATABASE
 import serial.tools.list_ports
+from camera_manager import CameraManager
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
 CAPTURE_FOLDER = "captured"
@@ -127,9 +128,9 @@ class TollApp(QWidget):
         self.last_cleanup = None
         self.user = user
         self.cam_index = None
+        self.camera_manager = CameraManager()
         self.loop_listener = LoopListener(callback=self.on_loop_detected)
         self.loop_listener.start()
-        self.detect_camera_index()
         self.lane = get_user_lane(user["username"])
         self.relay_mode = None  # 'gpio', 'serial', or None
         self.setup_boom_control()
@@ -158,7 +159,7 @@ class TollApp(QWidget):
         self.setup_ui()  # Now it's safe to use these labels
 
         self.reader = easyocr.Reader(["en"], gpu=True)
-        self.cap = cv2.VideoCapture(0)
+        self.cap = self.camera_manager.get_camera()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
@@ -452,58 +453,26 @@ class TollApp(QWidget):
             self.rfid_status.setText("RFID: Not Connected")
             self.rfid_status.setStyleSheet("color: red; font-weight: bold;")
     
-    def detect_camera_index(self, max_index=5):
-        for index in range(max_index):
-            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                cap.release()
-                print(f"✅ Camera detected at index {index}")
-                self.cam_index = index
-                return
-            cap.release()
-        print("❌ No working camera found.")
-        self.cam_index = None    
     
-    def capture_image(self, tag):
-        try:
-            if self.cam_index is None:
-                print("❌ No camera index available. Skipping capture.")
-                return
+    def capture_image(self, plate=None):
+        if self.current_frame is None:
+            print("⚠️ No frame to capture.")
+            return
 
-            print(f"📷 Attempting to capture from camera index: {self.cam_index}")
-            time.sleep(1)  # Allow a short pause before accessing the camera
-            cap = cv2.VideoCapture(self.cam_index)  # ✅ Don't force a backend
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"capture_{timestamp}"
+        if plate:
+            filename = f"{plate}_{timestamp}"
+        path = os.path.join("captures", f"{filename}.jpg")
 
-            if not cap.isOpened():
-                print(f"❌ Camera at index {self.cam_index} not accessible.")
-                return
-
-            time.sleep(0.5)
-            for _ in range(5):  # Warm-up by reading a few frames
-                ret, frame = cap.read()
-                if ret:
-                    break
-
-            if ret:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                folder = "captures"
-                os.makedirs(folder, exist_ok=True)
-                filename = f"{folder}/{tag}_{timestamp}.jpg"
-                cv2.imwrite(filename, frame)
-                print(f"📸 Image saved: {filename}")
-            else:
-                print("❌ Failed to capture frame.")
-
-            cap.release()
-
-        except Exception as e:
-            print(f"❌ Error accessing camera: {e}")
-
+        os.makedirs("captures", exist_ok=True)
+        cv2.imwrite(path, self.current_frame)
+        print(f"📸 Image saved to {path}")
 
 
     def update_frame(self):
         if self.cap is None or not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(0)
+            self.cap = self.camera_manager.get_camera()
             if not self.cap.isOpened():
                 print("❌ Camera could not be opened.")
                 return
@@ -589,7 +558,7 @@ class TollApp(QWidget):
             self.boom_status.setStyleSheet("color: green; font-weight: bold;")
             self.boom_icon.setPixmap(QPixmap("icons/boomopen.jpg").scaled(70, 70))
             print("🚧 Boom barrier opened!")
-            self.cap = cv2.VideoCapture(0)
+            self.cap = self.camera_manager.get_camera()
 
             if hasattr(self, "gpio_mode") and self.gpio_mode:
                 self.GPIO.output(self.BOOM_PIN, self.GPIO.HIGH)
@@ -796,6 +765,7 @@ class TollApp(QWidget):
                 self.rfid_listener.stop()
             if hasattr(self, 'toll_window'):
                 self.toll_window.close()
+                self.camera_manager.release()
         except Exception as e:
             print("Error during close:", e)
         event.accept()
