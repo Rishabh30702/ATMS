@@ -1,3 +1,4 @@
+import random
 import sys
 import os
 import cv2
@@ -29,7 +30,8 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QTextEdit
+    QTextEdit,
+    QFormLayout
 )
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt
@@ -198,7 +200,7 @@ class TollApp(QWidget):
         self.video_label = QLabel()
         self.video_label.setFixedSize(480, 360)
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("border: 3px solid #ccc; border-radius: 12px;")
+        self.video_label.setStyleSheet("border: 3px solid #ccc; border-radius: 12px; margin-top: 0px;")
 
         self.plate_input = QLineEdit()
         self.plate_input.setPlaceholderText("Auto detected vehicle number")
@@ -210,6 +212,49 @@ class TollApp(QWidget):
         self.amount_input = QLineEdit()
         self.amount_input.setPlaceholderText("Enter Toll Amount")
         self.set_amount_by_vehicle()
+
+                       # Non-editable backend-driven fields
+        self.pass_type_input = QLineEdit("Single Pass")
+        self.pass_type_input.setReadOnly(True)
+        
+        self.payment_method_input = QLineEdit("ETC")
+        self.payment_method_input.setReadOnly(True)
+        
+        self.exemption_type_input = QLineEdit("")
+        self.exemption_type_input.setReadOnly(True)
+        
+        self.base_weight_input = QLineEdit("19432")
+        self.base_weight_input.setReadOnly(True)
+        
+        self.wim_weight_input = QLineEdit("0")
+        self.wim_weight_input.setReadOnly(True)
+        
+        self.axle_count_input = QLineEdit("0")
+        self.axle_count_input.setReadOnly(True)
+        
+        self.fare_input = QLineEdit("0")
+        self.fare_input.setReadOnly(True)
+        
+        self.penalty_input = QLineEdit("0")
+        self.penalty_input.setReadOnly(True)
+        
+        self.total_amount_input = QLineEdit("Rs. 0")
+        self.total_amount_input.setReadOnly(True)
+        self.total_amount_input.setStyleSheet("font-weight: bold; font-size: 16px; color: #004080;")
+        
+        # Structured form layout
+        form_layout = QFormLayout()
+        form_layout.addRow("Pass Type", self.pass_type_input)
+        form_layout.addRow("Payment Method", self.payment_method_input)
+        form_layout.addRow("Exemption Type", self.exemption_type_input)
+        form_layout.addRow("Base Weight", self.base_weight_input)
+        form_layout.addRow("WIM Weight", self.wim_weight_input)
+        form_layout.addRow("Axle Count", self.axle_count_input)
+        form_layout.addRow("Fare", self.fare_input)
+        form_layout.addRow("Penalty", self.penalty_input)
+        form_layout.addRow("Total Amount", self.total_amount_input)
+
+
 
         self.no_fastag_checkbox = QCheckBox("Proceed without FASTag")
 
@@ -238,6 +283,7 @@ class TollApp(QWidget):
         form.addWidget(self.plate_input)
         form.addWidget(self.vehicle_type)
         form.addWidget(self.amount_input)
+        form.addLayout(form_layout)
         form.addWidget(self.no_fastag_checkbox)
         form.addWidget(self.info_table)
         form.addWidget(self.confirm_button)
@@ -339,6 +385,30 @@ class TollApp(QWidget):
         main.addLayout(bottom_status_layout)
 
         self.setLayout(main)
+
+
+    def populate_vehicle_fields(self, identifier):
+        data = check_fastag(identifier)
+    
+        if isinstance(data, dict):
+            if data.get("plate"):
+                self.plate_input.setText(data.get("plate"))
+    
+            self.pass_type_input.setText(data.get("pass_type", ""))
+            self.payment_method_input.setText(data.get("payment_method", ""))
+            self.exemption_type_input.setText(data.get("exemption_type", ""))
+            self.base_weight_input.setText(data.get("base_weight", ""))
+            self.wim_weight_input.setText(data.get("wim_weight", ""))
+            self.axle_count_input.setText(data.get("axle_count", ""))
+            self.fare_input.setText(data.get("fare", ""))
+            self.penalty_input.setText(data.get("penalty", ""))
+            self.total_amount_input.setText("Rs. " + data.get("total_amount", "0"))
+    
+        else:
+            # If data is just a plate string, at least show it
+            self.plate_input.setText(str(data))
+            self.info_table.setText("<font color='red'>No detailed FASTag data found.</font>")
+
 
     def verify_fastag(self, plate_number=None, tag_id=None):
         # If plate is available, prefer it
@@ -509,9 +579,6 @@ class TollApp(QWidget):
         image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
 
-
-
-
     def set_amount_by_vehicle(self):
         vehicle = self.vehicle_type.currentText()
         if vehicle in PRICING:
@@ -529,7 +596,7 @@ class TollApp(QWidget):
             amount = PRICING.get(tag_info.get("vehicle_class", "Car"), 60)
             if tag_info["balance"] >= amount:
                 deduct_fastag_amount(plate, amount)
-                self.capture_image(plate)  # ✅ Capture every new deduction
+                self.capture_image(plate)
                 log_entry(
                     plate,
                     tag_info.get("vehicle_class", "Car"),
@@ -541,14 +608,18 @@ class TollApp(QWidget):
                     plate, tag_info.get("vehicle_class", "Car"), tag_info["status"]
                 )
 
-        # Update info table
+                # ✅ Populate vehicle details in UI
+            self.populate_vehicle_fields(plate)
+
+        # Always update info panel
         self.info_table.setText(
             f"<b>Plate:</b> {plate} | <b>Status:</b> {tag_info['status']} | "
             f"<b>Balance:</b> ₹{tag_info.get('balance', 0)} | "
             f"<b>Class:</b> {tag_info.get('vehicle_class', 'Unknown')} | "
             f"<b>Tag ID:</b> {tag_info.get('tag_id', 'N/A')}"
         )
-        self.toggle_boom(True)  # ✅ Simulate boom opening on valid tag
+
+        self.toggle_boom(True)
 
 
 
@@ -585,13 +656,19 @@ class TollApp(QWidget):
      self.plate_input.setText(tag)
     
      tag_info = check_fastag(tag)
-     vehicle_class = tag_info.get("vehicle_class", "Car")
+     vehicle_class = tag_info.get("vehicle_class")
+     if not vehicle_class:
+        QMessageBox.warning(self, "Missing Data", "No vehicle class found for this FASTag.")
+        return  # Stop further processing
     
      # Auto-select vehicle class
      if vehicle_class in PRICING:
          index = self.vehicle_type.findText(vehicle_class)
          if index != -1:
              self.vehicle_type.setCurrentIndex(index)
+     amount = PRICING.get(vehicle_class, 60)
+     # Update UI fields
+     self.populate_vehicle_fields(tag)     
     
      winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
     
@@ -599,7 +676,6 @@ class TollApp(QWidget):
     
      status = tag_info["status"]
      balance = tag_info.get("balance", 0)
-     amount = PRICING.get(vehicle_class, 60)
     
      # Decide on deduction
      if status == "Valid" and balance >= amount:
@@ -641,6 +717,8 @@ class TollApp(QWidget):
             return
 
         tag_info = check_fastag(plate)
+        amount = float(amount) if isinstance(amount, str) else amount
+        self.populate_fastag_fields(tag_info, amount)
         winsound.PlaySound(BEEP_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
         now = datetime.now().strftime("%H:%M:%S")
 

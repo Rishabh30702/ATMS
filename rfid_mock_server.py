@@ -13,6 +13,7 @@ MOCK_TAGS = [
     "VEHICLE222",
     "RFID9999",
     "TESTTAG1",
+    "MH14BR6899"
 ]
 
 def handle_client(conn, addr, lane_id):
