@@ -201,7 +201,7 @@ class TollApp(QWidget):
         self.video_label = QLabel()
         self.video_label.setFixedSize(480, 360)
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("border: 3px solid #ccc; border-radius: 12px; margin-top: 0px;")
+        self.video_label.setStyleSheet("border: 3px solid #FFD700; margin-top: 0px;")
 
         self.plate_input = QLineEdit()
         self.plate_input.setPlaceholderText("Auto detected vehicle number")
@@ -241,7 +241,7 @@ class TollApp(QWidget):
         
         self.total_amount_input = QLineEdit("Rs. 0")
         self.total_amount_input.setReadOnly(True)
-        self.total_amount_input.setStyleSheet("font-weight: bold; font-size: 16px; color: #004080;")
+        self.total_amount_input.setStyleSheet("font-weight: bold; font-size: 16px; color: #FFD700;")
         
        # --- Structured form layout moved to right panel ---
         form_layout = QFormLayout()
@@ -260,7 +260,11 @@ class TollApp(QWidget):
         self.info_table.setTextFormat(Qt.RichText)
         self.no_fastag_checkbox = QCheckBox("Proceed without FASTag") 
         self.confirm_button = QPushButton("FINISH")
+        self.confirm_button.clicked.connect(self.cancel_transaction)
+
         self.export_button = QPushButton("RESTART")
+        self.export_button.clicked.connect(self.restart_form)
+
         self.test_boom_button = QPushButton("SIMULATE")
         form = QVBoxLayout()
         form.addWidget(self.plate_input)
@@ -292,11 +296,12 @@ class TollApp(QWidget):
         info_right = QVBoxLayout()
         vehicle_info_group = QGroupBox("Vehicle Info")
         vehicle_info_group.setLayout(form_layout)
+        vehicle_info_group.setStyleSheet("border: 2px solid #FFD700; padding: 6px;")  # Golden border
         info_right.addWidget(vehicle_info_group)
         
         # --- Top Header Row (Company & Vendor) ---
         header_layout = QHBoxLayout()
-        
+
         logo_label = QLabel()
         logo_pixmap = QPixmap("icons/vallenlogo.jpg")
         logo_pixmap = logo_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -311,8 +316,7 @@ class TollApp(QWidget):
         company_layout.setAlignment(Qt.AlignLeft)
         
         company_label = QLabel("")
-        company_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
-        
+        company_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50; border: 1px solid #2c3e50; padding: 4px;")
         vendor_label = QLabel("🔧 XYZ Solutions")
         vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
         
@@ -391,6 +395,7 @@ class TollApp(QWidget):
         }
         QPushButton:hover {
             background-color: #3C3C3C;
+            cursor: pointer;
         }
         QTableWidget QHeaderView::section {
             background-color: #2A2A2A;
@@ -399,6 +404,43 @@ class TollApp(QWidget):
             border: 1px solid #444;
         }
     """)
+
+    def restart_form(self):
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+
+
+    def cancel_transaction(self):
+     # Clear input fields
+     self.plate_input.clear()
+     self.amount_input.clear()
+     self.base_weight_input.clear()
+     self.wim_weight_input.clear()
+     self.axle_count_input.clear()
+     self.fare_input.clear()
+     self.penalty_input.clear()
+     self.total_amount_input.clear()
+
+     # Uncheck checkboxes safely
+     if hasattr(self, "fastag_checkbox") and self.fastag_checkbox:
+         self.fastag_checkbox.setChecked(False)
+     if hasattr(self, "no_fastag_checkbox") and self.no_fastag_checkbox:
+         self.no_fastag_checkbox.setChecked(False)
+
+     # Optionally update in-app info label
+     if hasattr(self, "info_label"):
+         self.info_label.setText("❌ Transaction cancelled.")
+     else:
+         # Fallback: show message box
+         QMessageBox.information(
+             self,
+             "Transaction Cancelled",
+             "❌ The current transaction has been cancelled.",
+             QMessageBox.Ok
+         )
+
+
+
 
     def populate_vehicle_fields(self, identifier):
         data = check_fastag(identifier)
