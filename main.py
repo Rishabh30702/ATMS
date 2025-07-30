@@ -378,29 +378,35 @@ class TollApp(QWidget):
         status_layout.addWidget(self.boom_status)
         main.addLayout(status_layout)
         
-        # --- Bottom Icons ---
-        bottom_status_layout = QHBoxLayout()
-        
+       # --- Bottom Icons: Right-Aligned Status Icons ---
+        bottom_icon_container = QHBoxLayout()
+        bottom_icon_container.addStretch()  # Push icons to the right
+
+        # Boom icon
         self.boom_icon = QLabel()
-        self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(70, 70))
+        self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(70, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.boom_icon.setToolTip("Boom Barrier")
-        bottom_status_layout.addWidget(self.boom_icon)
-        
+        bottom_icon_container.addWidget(self.boom_icon)
+
+        # Indicator icon
         self.indicator_icon = QLabel()
-        self.indicator_icon.setPixmap(QPixmap("icons/indicatorOff.jpg").scaled(32, 32))
+        self.indicator_icon.setPixmap(QPixmap("icons/indicatorOff.jpg").scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.indicator_icon.setToolTip("Indicator Lights")
-        bottom_status_layout.addWidget(self.indicator_icon)
-        
+        bottom_icon_container.addWidget(self.indicator_icon)
+
+        # Camera icon
         self.camera_icon = QLabel()
-        self.camera_icon.setPixmap(QPixmap("icons/camOff.jpg").scaled(32, 32))
+        self.camera_icon.setPixmap(QPixmap("icons/camOff.jpg").scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.camera_icon.setToolTip("Camera Active")
-        bottom_status_layout.addWidget(self.camera_icon)
-        
-        bottom_status_layout.addStretch()
-        main.addLayout(bottom_status_layout)
+        bottom_icon_container.addWidget(self.camera_icon)
+
+        # Add bottom_icon_container at the very bottom of the main layout
+        main.addLayout(bottom_icon_container)
+
         
         # --- Set Layout + Resize Window ---
         self.setLayout(main)
+        main.setContentsMargins(10, 10, 10, 50) # (left, top, right, bottom)
         self.showMaximized()
          # 🔲 DARK THEME
         self.setStyleSheet("""
