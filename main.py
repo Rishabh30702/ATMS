@@ -31,7 +31,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QTextEdit,
-    QFormLayout
+    QFormLayout,
+    QGroupBox
 )
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt
@@ -242,7 +243,7 @@ class TollApp(QWidget):
         self.total_amount_input.setReadOnly(True)
         self.total_amount_input.setStyleSheet("font-weight: bold; font-size: 16px; color: #004080;")
         
-        # Structured form layout
+       # --- Structured form layout moved to right panel ---
         form_layout = QFormLayout()
         form_layout.addRow("Pass Type", self.pass_type_input)
         form_layout.addRow("Payment Method", self.payment_method_input)
@@ -253,139 +254,151 @@ class TollApp(QWidget):
         form_layout.addRow("Fare", self.fare_input)
         form_layout.addRow("Penalty", self.penalty_input)
         form_layout.addRow("Total Amount", self.total_amount_input)
-
-
-
-        self.no_fastag_checkbox = QCheckBox("Proceed without FASTag")
-
+        
+        # --- Main Form (center section as before) ---
         self.info_table = QLabel("Waiting for detection...")
         self.info_table.setTextFormat(Qt.RichText)
-
-        self.transactions_table = QTableWidget(5, 5)
-        self.transactions_table.setHorizontalHeaderLabels(
-            ["Plate", "Vehicle", "FASTag", "Operator", "Time"]
-        )
-        self.transactions_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
-        self.transactions_table.setEditTriggers(QTableWidget.NoEditTriggers)
-
-        self.confirm_button = QPushButton("Confirm Transaction")
-        self.confirm_button.clicked.connect(self.handle_transaction)
-
-        self.export_button = QPushButton("Export Logs")
-        self.export_button.clicked.connect(self.export_logs)
-
-        self.test_boom_button = QPushButton("Test Boom")
-        self.test_boom_button.clicked.connect(lambda: self.toggle_boom(True))
-
+        self.no_fastag_checkbox = QCheckBox("Proceed without FASTag") 
+        self.confirm_button = QPushButton("FINISH")
+        self.export_button = QPushButton("RESTART")
+        self.test_boom_button = QPushButton("SIMULATE")
         form = QVBoxLayout()
         form.addWidget(self.plate_input)
         form.addWidget(self.vehicle_type)
         form.addWidget(self.amount_input)
-        form.addLayout(form_layout)
         form.addWidget(self.no_fastag_checkbox)
         form.addWidget(self.info_table)
         form.addWidget(self.confirm_button)
         form.addWidget(self.export_button)
         form.addWidget(self.test_boom_button)
-
+        
         self.plate_input.setFixedHeight(40)
         self.amount_input.setFixedHeight(40)
         self.vehicle_type.setFixedHeight(40)
-
-
+        
+        # --- Center Block (transactions + form) ---
+        # Transactions Table (add this before right.addWidget)
+        self.transactions_table = QTableWidget()
+        self.transactions_table.setColumnCount(5)
+        self.transactions_table.setHorizontalHeaderLabels(["Time", "Plate", "Type", "Amount", "FASTag"])
+        self.transactions_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.transactions_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.transactions_table.setMaximumHeight(150)
         right = QVBoxLayout()
         right.addWidget(self.transactions_table)
         right.addLayout(form)
-
-       # --- Top Header Row (Company & Vendor) ---
+        
+        # --- Right Panel: Detailed Info Fields ---
+        info_right = QVBoxLayout()
+        vehicle_info_group = QGroupBox("Vehicle Info")
+        vehicle_info_group.setLayout(form_layout)
+        info_right.addWidget(vehicle_info_group)
+        
+        # --- Top Header Row (Company & Vendor) ---
         header_layout = QHBoxLayout()
-
-        # Company Logo
+        
         logo_label = QLabel()
-        logo_pixmap = QPixmap("icons/vallenlogo.jpg")  # Use your actual path here
+        logo_pixmap = QPixmap("icons/vallenlogo.jpg")
         logo_pixmap = logo_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         logo_label.setPixmap(logo_pixmap)
-
+        
         company_name = QLabel("Valliento Tech")
-        company_name.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
-
+        company_name.setStyleSheet("font-size: 16px; font-weight: bold; color: #fff;")
+        
         company_layout = QHBoxLayout()
         company_layout.addWidget(logo_label)
         company_layout.addWidget(company_name)
         company_layout.setAlignment(Qt.AlignLeft)
-
+        
         company_label = QLabel("")
         company_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
-
+        
         vendor_label = QLabel("🔧 XYZ Solutions")
         vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
-
-        header_layout = QHBoxLayout()
+        
         header_layout.addLayout(company_layout)
         header_layout.addStretch()
-
-        vendor_label = QLabel("🔧 XYZ Solutions")
-        vendor_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
         header_layout.addWidget(vendor_label)
         header_layout.addWidget(company_label)
         header_layout.addStretch()
         header_layout.addWidget(vendor_label)
-
-        # --- Centered Toll Lane Title ---
-        lane_title = QLabel(f"🚧 Toll Booth - Lane {self.lane}")
-        lane_title.setAlignment(Qt.AlignCenter)
-        lane_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #273c75;")
-    
-
+        
+        # --- Main Layout Assembly ---
         main = QVBoxLayout()
-        main.addLayout(header_layout)    
-
+        main.addLayout(header_layout)
+        
         lane_title = QLabel(f"🚧 Toll Booth - Lane {self.lane}")
         lane_title.setAlignment(Qt.AlignCenter)
         lane_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #273c75;")
         main.addWidget(lane_title)
         main.addLayout(self.vehicle_buttons)
+        
+        # --- Horizontal Layout: Left (video), Middle (form+logs), Right (detailed info) ---
         row = QHBoxLayout()
         row.addWidget(self.video_label)
         row.addLayout(right)
-
+        row.addLayout(info_right)
+        main.addLayout(row)
+        
+        # --- Status Row ---
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.anpr_status)
         status_layout.addWidget(self.rfid_status)
-
         status_layout.addWidget(self.boom_status)
-
         main.addLayout(status_layout)
-
-        main.addLayout(row)
-                # --- Bottom Control Icons (Boom, Indicator, Camera) ---
+        
+        # --- Bottom Icons ---
         bottom_status_layout = QHBoxLayout()
-
-        # Boom Icon
+        
         self.boom_icon = QLabel()
         self.boom_icon.setPixmap(QPixmap("icons/boomclose.jpg").scaled(70, 70))
         self.boom_icon.setToolTip("Boom Barrier")
         bottom_status_layout.addWidget(self.boom_icon)
-
-        # Indicator Icon
+        
         self.indicator_icon = QLabel()
         self.indicator_icon.setPixmap(QPixmap("icons/indicatorOff.jpg").scaled(32, 32))
         self.indicator_icon.setToolTip("Indicator Lights")
         bottom_status_layout.addWidget(self.indicator_icon)
-
-        # Camera Icon
+        
         self.camera_icon = QLabel()
         self.camera_icon.setPixmap(QPixmap("icons/camOff.jpg").scaled(32, 32))
         self.camera_icon.setToolTip("Camera Active")
         bottom_status_layout.addWidget(self.camera_icon)
-
+        
         bottom_status_layout.addStretch()
         main.addLayout(bottom_status_layout)
-
+        
+        # --- Set Layout + Resize Window ---
         self.setLayout(main)
-
+        self.showMaximized()
+         # 🔲 DARK THEME
+        self.setStyleSheet("""
+        QWidget {
+            background-color: #2e2e2e;
+            color: white;
+            font-size: 14px;
+        }
+        QLineEdit, QComboBox, QTableWidget, QCheckBox {
+            background-color: #1E1E1E;
+            border: 1px solid #444;
+            padding: 4px;
+        }
+        QPushButton {
+            background-color: #2E2E2E;
+            border: 1px solid #666;
+            padding: 6px 12px;
+            border-radius: 5px;
+        }
+        QPushButton:hover {
+            background-color: #3C3C3C;
+        }
+        QTableWidget QHeaderView::section {
+            background-color: #2A2A2A;
+            color: white;
+            padding: 4px;
+            border: 1px solid #444;
+        }
+    """)
 
     def populate_vehicle_fields(self, identifier):
         data = check_fastag(identifier)

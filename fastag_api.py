@@ -15,7 +15,7 @@ FASTAG_DATABASE = {
         "axle_count": "2",
         "fare": "0",
         "penalty": "0",
-        "total_amount": "0",
+        "total_amount": "60",
         "status": "Valid", "tag_id": "FT12345", "balance": 60, "vehicle_class": "Car"
     }
     
