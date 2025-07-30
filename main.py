@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox
 )
+import numpy as np
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTableWidgetItem
@@ -46,7 +47,8 @@ import easyocr
 from db import authenticate_user, get_user_lane, log_entry
 from fastag_api import check_fastag, deduct_fastag_amount,FASTAG_DATABASE
 import serial.tools.list_ports
-from camera_manager import CameraManager
+from incident_recorder import record_incident_clip
+from camera_manager import MultiCameraManager
 
 BEEP_PATH = os.path.join(os.path.dirname(__file__), "beep.wav")
 CAPTURE_FOLDER = "captured"
@@ -131,7 +133,9 @@ class TollApp(QWidget):
         self.last_cleanup = None
         self.user = user
         self.cam_index = None
-        self.camera_manager = CameraManager()
+        self.camera_manager = MultiCameraManager()
+        self.cap = None  # For vehicle camera
+        self.incident_cap = None  # ✅ For incident camera
         self.loop_listener = LoopListener(callback=self.on_loop_detected)
         self.loop_listener.start()
         self.lane = get_user_lane(user["username"])
@@ -171,6 +175,10 @@ class TollApp(QWidget):
         self.last_detected_plate = ""
         self.current_frame = None
 
+        self.incident_timer = QTimer()
+        self.incident_timer.timeout.connect(self.update_incident_frame)
+        self.incident_timer.start(100)
+
         rfid_port = find_rfid_port()
         if rfid_port:
             self.start_rfid_listener(rfid_port)
@@ -199,7 +207,7 @@ class TollApp(QWidget):
             self.vehicle_btns[key] = label
 
         self.video_label = QLabel()
-        self.video_label.setFixedSize(480, 360)
+        self.video_label.setFixedSize(460, 220)
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("border: 3px solid #FFD700; margin-top: 0px;")
 
@@ -338,8 +346,27 @@ class TollApp(QWidget):
         main.addLayout(self.vehicle_buttons)
         
         # --- Horizontal Layout: Left (video), Middle (form+logs), Right (detailed info) ---
+        # Incident camera label and view
+        self.incident_camera_title = QLabel("Incident Camera")
+        self.incident_camera_title.setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 8px;")
+        
+        self.incident_camera_view = QLabel("Incident Camera")
+        self.incident_camera_view.setFixedSize(460, 160)
+        self.incident_camera_view.setAlignment(Qt.AlignCenter)
+        self.incident_camera_view.setStyleSheet("border: 2px solid red;")
+
+        vehicle_camera_label = QLabel("Vehicle Camera")
+        vehicle_camera_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px;")
+
+
+        left_camera_column = QVBoxLayout()
+        left_camera_column.addWidget(vehicle_camera_label)
+        left_camera_column.addWidget(self.video_label)
+        left_camera_column.addWidget(self.incident_camera_title)
+        left_camera_column.addWidget(self.incident_camera_view)
+
         row = QHBoxLayout()
-        row.addWidget(self.video_label)
+        row.addLayout(left_camera_column)
         row.addLayout(right)
         row.addLayout(info_right)
         main.addLayout(row)
@@ -395,7 +422,6 @@ class TollApp(QWidget):
         }
         QPushButton:hover {
             background-color: #3C3C3C;
-            cursor: pointer;
         }
         QTableWidget QHeaderView::section {
             background-color: #2A2A2A;
@@ -408,6 +434,52 @@ class TollApp(QWidget):
     def restart_form(self):
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
+    def record_incident_clip(self, duration=5, fps=20):
+        incident_index = self.camera_manager.cameras.get("incident_camera")
+        if incident_index is None:
+            print("⚠️ Incident camera not found in config.")
+            return
+    
+        cap = cv2.VideoCapture(incident_index)
+        if not cap.isOpened():
+            print("❌ Incident camera could not be opened.")
+            return
+    
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    
+        os.makedirs("clips", exist_ok=True)
+        filename = datetime.now().strftime("incident_%Y%m%d_%H%M%S.avi")
+        filepath = os.path.join("clips", filename)
+    
+        out = cv2.VideoWriter(filepath, fourcc, fps, (width, height))
+        frame_count = int(duration * fps)
+    
+        print(f"📹 Recording incident clip to {filepath}...")
+    
+        try:
+            for _ in range(frame_count):
+                ret, frame = cap.read()
+                if not ret:
+                    print("⚠️ Failed to read frame from incident camera.")
+                    break
+                
+                # Optional: overlay timestamp
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cv2.putText(frame, timestamp, (10, height - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
+                out.write(frame)
+                time.sleep(1.0 / fps)  # optional: pacing for stability
+        finally:
+            cap.release()
+            out.release()
+    
+        print(f"✅ Incident clip saved: {filepath}")
+
+
 
 
     def cancel_transaction(self):
@@ -593,25 +665,29 @@ class TollApp(QWidget):
         os.makedirs("captures", exist_ok=True)
         cv2.imwrite(path, self.current_frame)
         print(f"📸 Image saved to {path}")
+         # 🔁 Automatically start incident recording
+        threading.Thread(target=self.record_incident_clip).start()
 
 
     def update_frame(self):
         if self.cap is None or not self.cap.isOpened():
-            self.cap = self.camera_manager.get_camera()
-            if not self.cap.isOpened():
-                print("❌ Camera could not be opened.")
-                return
+            self.cap = self.camera_manager.get_camera("vehicle_camera")  # explicitly specify
 
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
-            # print("⚠️ Failed to read from camera.")
-            return
+        if self.cap and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                self.current_frame = frame.copy()
+            else:
+                print("⚠️ Failed to read from camera. Showing blank.")
+                self.current_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        else:
+            print("⚠️ No camera found. Showing blank.")
+            self.current_frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        self.current_frame = frame.copy()
         self.frame_count += 1
 
         if self.frame_count % 10 == 0:
-            plate, box = detect_plate(self.reader, frame)
+            plate, box = detect_plate(self.reader, self.current_frame)
 
             if plate:
                 if plate != self.last_detected_plate or time.time() - getattr(self, 'last_plate_time', 0) > 3:
@@ -630,9 +706,25 @@ class TollApp(QWidget):
 
                     self.handle_auto_deduction_with_taginfo(plate, tag_info)
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
+
+    def update_incident_frame(self):
+        if self.incident_cap is None or not self.incident_cap.isOpened():
+            self.incident_cap = self.camera_manager.get_camera("incident_camera")
+            if not self.incident_cap or not self.incident_cap.isOpened():
+                self.incident_camera_view.setText("❌ Incident Camera not available")
+                return
+    
+        ret, frame = self.incident_cap.read()
+        if not ret or frame is None:
+            return
+    
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = QImage(rgb, rgb.shape[1], rgb.shape[0], QImage.Format_RGB888)
+        self.incident_camera_view.setPixmap(QPixmap.fromImage(image))
+
 
     def set_amount_by_vehicle(self):
         vehicle = self.vehicle_type.currentText()

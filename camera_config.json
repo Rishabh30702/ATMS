@@ -1,1 +1,4 @@
-{"camera_index": 0}
+{
+    "vehicle_camera": 0,
+    "incident_camera": -0
+}
