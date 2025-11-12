@@ -181,7 +181,8 @@ class TollApp(QWidget):
 
         rfid_port = find_rfid_port()
         if rfid_port:
-            self.start_rfid_listener(rfid_port)
+            self.rfid_listener = RFIDListener(on_tag_callback=self.handle_rfid_tag)
+            self.rfid_listener.start()
         else:
             print("⚠️ No RFID COM port found.")
 
