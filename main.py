@@ -288,6 +288,9 @@ class TollApp(QWidget):
         self.plate_input.setFixedHeight(40)
         self.amount_input.setFixedHeight(40)
         self.vehicle_type.setFixedHeight(40)
+
+        self.test_boom_button.clicked.connect(self.simulate_manual_entry)
+
         
         # --- Center Block (transactions + form) ---
         # Transactions Table (add this before right.addWidget)
@@ -437,6 +440,58 @@ class TollApp(QWidget):
             border: 1px solid #444;
         }
     """)
+        
+    def simulate_manual_entry(self):
+      plate = self.plate_input.text().strip().upper()
+      vehicle = self.vehicle_type.currentText()
+      amount = self.amount_input.text().strip()
+
+      if not plate:
+          QMessageBox.warning(self, "Missing Plate", "Please enter vehicle number manually.")
+          return
+
+      try:
+          amount = float(amount)
+      except ValueError:
+          QMessageBox.warning(self, "Invalid Amount", "Enter a valid amount.")
+          return
+
+      # 🔕 Disable ANPR overwrite temporarily
+      self.manual_override = True
+
+      # 📸 Capture image
+      self.capture_image(plate)
+
+      # 🧾 Log manual transaction
+      log_entry(
+          plate,
+          vehicle,
+          "Manual",
+          self.user["username"],
+          self.lane
+      )
+
+      # 📊 Update table
+      self.update_transactions(plate, vehicle, "Manual")
+
+      # ℹ️ Update info panel
+      self.info_table.setText(
+          f"<b>Plate:</b> {plate} | "
+          f"<b>Mode:</b> Manual | "
+          f"<b>Vehicle:</b> {vehicle} | "
+          f"<b>Amount:</b> ₹{amount}"
+      )
+
+      # 🚧 Open boom
+      self.toggle_boom(True)
+
+      QMessageBox.information(
+          self,
+          "Manual Simulation",
+          f"Manual toll processed for {plate}"
+      )    
+    
+    
 
     def restart_form(self):
         python = sys.executable
@@ -801,7 +856,8 @@ class TollApp(QWidget):
                 self.relay_serial.write(b"C")  # Close command
 
         # Auto-close after 3 seconds
-        QTimer.singleShot(3000, lambda: self.toggle_boom(False))
+        if open_boom:
+            QTimer.singleShot(3000, lambda: self.toggle_boom(False))
 
     def handle_rfid_tag(self, tag, lane_id):
      insert_rfid_log(tag, lane_id)
